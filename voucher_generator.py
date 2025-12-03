@@ -7,6 +7,7 @@ Repository: https://github.com/riconanci/TicketGen
 
 import csv
 import os
+import math
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk, ImageDraw, ImageFont
@@ -21,7 +22,7 @@ class VoucherGeneratorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Drink Voucher Generator")
-        self.root.geometry("650x850")
+        self.root.geometry("700x920")
         self.root.resizable(False, False)
         
         # Variables
@@ -37,14 +38,29 @@ class VoucherGeneratorApp:
         
         # Layout variables
         self.orientation_var = tk.StringVar(value="Portrait")
-        self.columns_var = tk.StringVar(value="2")
-        self.rows_var = tk.StringVar(value="6")
+        self.ticket_width_var = tk.StringVar(value="3")
+        self.ticket_height_var = tk.StringVar(value="1.75")
         self.tickets_per_attendee_var = tk.StringVar(value="5")
         
         # Preview mode: "ticket" or "layout"
         self.preview_mode = tk.StringVar(value="ticket")
         
+        # Draggable text positions (as percentage of ticket height, 0 = center)
+        # Negative = above center, Positive = below center
+        self.title_y_pos = -0.25  # Title starts 25% above center
+        self.name_y_pos = 0.10   # Name starts 10% below center
+        
+        # Dragging state
+        self.dragging = None  # None, "title", or "name"
+        self.drag_start_y = 0
+        self.drag_start_pos = 0
+        
+        # Preview dimensions (updated when preview is drawn)
+        self.preview_ticket_height = 0
+        self.preview_offset_y = 0
+        
         self.setup_ui()
+        self.update_valid_sizes()
         
     def setup_ui(self):
         # Main container
@@ -72,7 +88,7 @@ class VoucherGeneratorApp:
         self.img_label.pack(side=tk.LEFT, padx=(10, 0))
         
         # === PREVIEW SECTION ===
-        preview_frame = ttk.LabelFrame(main_frame, text="Preview", padding="10")
+        preview_frame = ttk.LabelFrame(main_frame, text="Preview (drag title/name to reposition)", padding="10")
         preview_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
         # Preview toggle buttons
@@ -88,20 +104,25 @@ class VoucherGeneratorApp:
         self.layout_btn.pack(side=tk.LEFT)
         
         # Preview canvas
-        self.preview_canvas = tk.Canvas(preview_frame, width=450, height=320, bg="#f0f0f0", relief="sunken", bd=2)
+        self.preview_canvas = tk.Canvas(preview_frame, width=500, height=350, bg="#e0e0e0", relief="sunken", bd=2)
         self.preview_canvas.pack(pady=5)
-        self.preview_canvas.create_text(225, 160, text="Select an image to see preview", fill="gray")
+        self.preview_canvas.create_text(250, 175, text="Select an image to see preview", fill="gray")
         
-        # Ticket size info label
-        self.size_info_label = ttk.Label(preview_frame, text="", foreground="gray")
-        self.size_info_label.pack()
+        # Bind mouse events for dragging
+        self.preview_canvas.bind("<Button-1>", self.on_canvas_click)
+        self.preview_canvas.bind("<B1-Motion>", self.on_canvas_drag)
+        self.preview_canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
         
-        # Warning label for size issues
-        self.warning_label = ttk.Label(preview_frame, text="", foreground="orange")
-        self.warning_label.pack()
+        # Layout info label
+        self.layout_info_label = ttk.Label(preview_frame, text="", foreground="blue")
+        self.layout_info_label.pack()
+        
+        # Drag instruction
+        self.drag_hint_label = ttk.Label(preview_frame, text="↕ Click and drag title or name to reposition", foreground="gray")
+        self.drag_hint_label.pack()
         
         # === SETTINGS SECTION ===
-        settings_frame = ttk.LabelFrame(main_frame, text="Step 2: Customize", padding="10")
+        settings_frame = ttk.LabelFrame(main_frame, text="Step 2: Customize Text", padding="10")
         settings_frame.pack(fill=tk.X, pady=(0, 10))
         
         # Title field
@@ -132,67 +153,150 @@ class VoucherGeneratorApp:
         self.bold_check.pack(side=tk.LEFT, padx=(5, 0))
         self.bold_check.select()
         
+        # Reset positions button
+        reset_row = ttk.Frame(settings_frame)
+        reset_row.pack(fill=tk.X, pady=5)
+        ttk.Label(reset_row, text="Text Position:", width=15).pack(side=tk.LEFT)
+        reset_btn = tk.Button(reset_row, text="Reset to Center", command=self.reset_text_positions, 
+                              bg="#888", fg="white", padx=10)
+        reset_btn.pack(side=tk.LEFT, padx=(5, 0))
+        
         # === LAYOUT SECTION ===
-        layout_frame = ttk.LabelFrame(main_frame, text="Step 3: Page Layout", padding="10")
+        layout_frame = ttk.LabelFrame(main_frame, text="Step 3: Ticket Size & Layout", padding="10")
         layout_frame.pack(fill=tk.X, pady=(0, 10))
         
-        # Orientation
+        # Page Orientation
         orient_row = ttk.Frame(layout_frame)
         orient_row.pack(fill=tk.X, pady=5)
-        ttk.Label(orient_row, text="Orientation:", width=15).pack(side=tk.LEFT)
-        orient_combo = ttk.Combobox(orient_row, textvariable=self.orientation_var,
-                                     values=["Portrait", "Landscape"], width=10, state="readonly")
-        orient_combo.pack(side=tk.LEFT, padx=(5, 0))
-        orient_combo.bind('<<ComboboxSelected>>', lambda e: self.update_preview())
+        ttk.Label(orient_row, text="Page:", width=15).pack(side=tk.LEFT)
+        orient_frame = ttk.Frame(orient_row)
+        orient_frame.pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Radiobutton(orient_frame, text="Portrait (8.5\" × 11\")", 
+                        variable=self.orientation_var, value="Portrait",
+                        command=self.on_orientation_change).pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Radiobutton(orient_frame, text="Landscape (11\" × 8.5\")", 
+                        variable=self.orientation_var, value="Landscape",
+                        command=self.on_orientation_change).pack(side=tk.LEFT)
         
-        # Columns
-        cols_row = ttk.Frame(layout_frame)
-        cols_row.pack(fill=tk.X, pady=5)
-        ttk.Label(cols_row, text="Columns:", width=15).pack(side=tk.LEFT)
-        cols_combo = ttk.Combobox(cols_row, textvariable=self.columns_var,
-                                   values=["1", "2", "3", "4"], width=5, state="readonly")
-        cols_combo.pack(side=tk.LEFT, padx=(5, 0))
-        cols_combo.bind('<<ComboboxSelected>>', lambda e: self.update_preview())
-        ttk.Label(cols_row, text="(tickets across)", foreground="gray").pack(side=tk.LEFT, padx=(10, 0))
+        # Ticket Width
+        width_row = ttk.Frame(layout_frame)
+        width_row.pack(fill=tk.X, pady=5)
+        ttk.Label(width_row, text="Ticket Width:", width=15).pack(side=tk.LEFT)
+        self.width_combo = ttk.Combobox(width_row, textvariable=self.ticket_width_var,
+                                    values=["1.5", "2", "2.5", "3", "3.5", "4", "4.25"], 
+                                    width=8, state="readonly")
+        self.width_combo.pack(side=tk.LEFT, padx=(5, 0))
+        self.width_combo.bind('<<ComboboxSelected>>', lambda e: self.on_size_change())
+        ttk.Label(width_row, text="inches", foreground="gray").pack(side=tk.LEFT, padx=(5, 0))
+        self.width_info_label = ttk.Label(width_row, text="", foreground="blue")
+        self.width_info_label.pack(side=tk.LEFT, padx=(10, 0))
         
-        # Rows
-        rows_row = ttk.Frame(layout_frame)
-        rows_row.pack(fill=tk.X, pady=5)
-        ttk.Label(rows_row, text="Rows:", width=15).pack(side=tk.LEFT)
-        rows_combo = ttk.Combobox(rows_row, textvariable=self.rows_var,
-                                   values=["1", "2", "3", "4", "5", "6"], width=5, state="readonly")
-        rows_combo.pack(side=tk.LEFT, padx=(5, 0))
-        rows_combo.bind('<<ComboboxSelected>>', lambda e: self.update_preview())
-        ttk.Label(rows_row, text="(tickets down)", foreground="gray").pack(side=tk.LEFT, padx=(10, 0))
+        # Ticket Height
+        height_row = ttk.Frame(layout_frame)
+        height_row.pack(fill=tk.X, pady=5)
+        ttk.Label(height_row, text="Ticket Height:", width=15).pack(side=tk.LEFT)
+        self.height_combo = ttk.Combobox(height_row, textvariable=self.ticket_height_var,
+                                     values=["1", "1.25", "1.5", "1.75", "2", "2.5", "3", "3.5", "4"], 
+                                     width=8, state="readonly")
+        self.height_combo.pack(side=tk.LEFT, padx=(5, 0))
+        self.height_combo.bind('<<ComboboxSelected>>', lambda e: self.on_size_change())
+        ttk.Label(height_row, text="inches", foreground="gray").pack(side=tk.LEFT, padx=(5, 0))
+        self.height_info_label = ttk.Label(height_row, text="", foreground="blue")
+        self.height_info_label.pack(side=tk.LEFT, padx=(10, 0))
         
         # Tickets per attendee
         tpa_row = ttk.Frame(layout_frame)
         tpa_row.pack(fill=tk.X, pady=5)
         ttk.Label(tpa_row, text="Tickets/Attendee:", width=15).pack(side=tk.LEFT)
         tpa_combo = ttk.Combobox(tpa_row, textvariable=self.tickets_per_attendee_var,
-                                  values=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"], width=5, state="readonly")
+                                  values=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"], 
+                                  width=5, state="readonly")
         tpa_combo.pack(side=tk.LEFT, padx=(5, 0))
         tpa_combo.bind('<<ComboboxSelected>>', lambda e: self.update_preview())
         
-        # Calculated info
-        calc_row = ttk.Frame(layout_frame)
-        calc_row.pack(fill=tk.X, pady=5)
-        ttk.Label(calc_row, text="", width=15).pack(side=tk.LEFT)
-        self.calc_label = ttk.Label(calc_row, text="Attendees per page: 2", foreground="blue")
-        self.calc_label.pack(side=tk.LEFT, padx=(5, 0))
+        # Calculated info display
+        calc_frame = ttk.Frame(layout_frame)
+        calc_frame.pack(fill=tk.X, pady=(10, 5))
+        
+        self.calc_label = ttk.Label(calc_frame, text="", foreground="#333", font=("Arial", 9))
+        self.calc_label.pack(anchor=tk.W)
+        
+        self.warning_label = ttk.Label(calc_frame, text="", foreground="orange")
+        self.warning_label.pack(anchor=tk.W)
         
         # === GENERATE SECTION ===
         generate_frame = ttk.Frame(main_frame)
         generate_frame.pack(fill=tk.X, pady=10)
         
         self.generate_btn = tk.Button(generate_frame, text="GENERATE PDF", command=self.generate_pdf,
-                                       bg="#FF5722", fg="white", font=("Arial", 12, "bold"),
-                                       padx=20, pady=10, state=tk.DISABLED)
+                                       bg="#FF5722", fg="white", font=("Arial", 14, "bold"),
+                                       padx=30, pady=12, state=tk.DISABLED)
         self.generate_btn.pack(pady=10)
         
         # Status label
         self.status_label = ttk.Label(generate_frame, text="Select a CSV file and image to get started", foreground="gray")
         self.status_label.pack()
+    
+    def reset_text_positions(self):
+        """Reset title and name to default positions"""
+        self.title_y_pos = -0.25
+        self.name_y_pos = 0.10
+        self.update_preview()
+    
+    def on_canvas_click(self, event):
+        """Handle mouse click on canvas - start dragging if on text"""
+        if self.preview_mode.get() != "ticket" or not self.voucher_image:
+            return
+        
+        # Check if click is within the ticket area
+        canvas_height = 350
+        ticket_top = self.preview_offset_y
+        ticket_bottom = ticket_top + self.preview_ticket_height
+        
+        if event.y < ticket_top or event.y > ticket_bottom:
+            return
+        
+        # Calculate relative Y position within ticket (0 = center)
+        relative_y = (event.y - ticket_top) / self.preview_ticket_height - 0.5
+        
+        # Check if near title or name position (within 15% tolerance)
+        title_pos = self.title_y_pos
+        name_pos = self.name_y_pos
+        
+        if abs(relative_y - title_pos) < 0.15:
+            self.dragging = "title"
+            self.drag_start_y = event.y
+            self.drag_start_pos = self.title_y_pos
+            self.preview_canvas.config(cursor="sb_v_double_arrow")
+        elif abs(relative_y - name_pos) < 0.15:
+            self.dragging = "name"
+            self.drag_start_y = event.y
+            self.drag_start_pos = self.name_y_pos
+            self.preview_canvas.config(cursor="sb_v_double_arrow")
+    
+    def on_canvas_drag(self, event):
+        """Handle mouse drag on canvas"""
+        if not self.dragging or self.preview_ticket_height == 0:
+            return
+        
+        # Calculate position change as percentage of ticket height
+        delta_y = (event.y - self.drag_start_y) / self.preview_ticket_height
+        new_pos = self.drag_start_pos + delta_y
+        
+        # Clamp to reasonable bounds (-0.45 to 0.45)
+        new_pos = max(-0.45, min(0.45, new_pos))
+        
+        if self.dragging == "title":
+            self.title_y_pos = new_pos
+        else:
+            self.name_y_pos = new_pos
+        
+        self.update_preview()
+    
+    def on_canvas_release(self, event):
+        """Handle mouse release"""
+        self.dragging = None
+        self.preview_canvas.config(cursor="")
         
     def set_preview_mode(self, mode):
         """Toggle between ticket and layout preview modes"""
@@ -201,67 +305,103 @@ class VoucherGeneratorApp:
         if mode == "ticket":
             self.ticket_btn.config(bg="#2196F3", fg="white")
             self.layout_btn.config(bg="#cccccc", fg="black")
+            self.drag_hint_label.config(text="↕ Click and drag title or name to reposition")
         else:
             self.ticket_btn.config(bg="#cccccc", fg="black")
             self.layout_btn.config(bg="#2196F3", fg="white")
+            self.drag_hint_label.config(text="")
         
         self.update_preview()
+    
+    def on_orientation_change(self):
+        """Handle orientation change"""
+        self.update_valid_sizes()
+        self.update_preview()
+    
+    def on_size_change(self):
+        """Handle ticket size change"""
+        self.update_valid_sizes()
+        self.update_preview()
+    
+    def update_valid_sizes(self):
+        """Update width/height options based on page orientation"""
+        page_w, page_h = self.get_page_dimensions()
+        page_w_in = page_w / inch
+        page_h_in = page_h / inch
+        
+        all_widths = ["1.5", "2", "2.5", "3", "3.5", "4", "4.25", "5.5"]
+        all_heights = ["1", "1.25", "1.5", "1.75", "2", "2.5", "3", "3.5", "4", "5.5"]
+        
+        valid_widths = [w for w in all_widths if float(w) <= page_w_in]
+        valid_heights = [h for h in all_heights if float(h) <= page_h_in]
+        
+        current_width = self.ticket_width_var.get()
+        current_height = self.ticket_height_var.get()
+        
+        self.width_combo['values'] = valid_widths
+        self.height_combo['values'] = valid_heights
+        
+        if current_width not in valid_widths and valid_widths:
+            self.ticket_width_var.set("3" if "3" in valid_widths else valid_widths[-1])
+        if current_height not in valid_heights and valid_heights:
+            self.ticket_height_var.set("1.75" if "1.75" in valid_heights else valid_heights[-1])
+        
+        try:
+            cols = int(page_w_in / float(self.ticket_width_var.get()))
+            rows = int(page_h_in / float(self.ticket_height_var.get()))
+            self.width_info_label.config(text=f"({cols} across)")
+            self.height_info_label.config(text=f"({rows} down)")
+        except:
+            pass
         
     def get_page_dimensions(self):
-        """Get page dimensions based on orientation"""
+        """Get page dimensions in points"""
         if self.orientation_var.get() == "Landscape":
             return landscape(letter)
         return letter
     
     def get_ticket_dimensions(self):
-        """Calculate ticket dimensions based on layout settings"""
-        page_width, page_height = self.get_page_dimensions()
-        cols = int(self.columns_var.get())
-        rows = int(self.rows_var.get())
-        
-        ticket_width = page_width / cols
-        ticket_height = page_height / rows
-        
-        return ticket_width, ticket_height
+        """Get ticket dimensions in points"""
+        width = float(self.ticket_width_var.get()) * inch
+        height = float(self.ticket_height_var.get()) * inch
+        return width, height
     
-    def get_attendees_per_page(self):
-        """Calculate how many attendees fit on one page"""
-        cols = int(self.columns_var.get())
-        rows = int(self.rows_var.get())
+    def calculate_grid(self):
+        """Calculate how many tickets fit on a page (no mixing attendees per row)"""
+        page_w, page_h = self.get_page_dimensions()
+        ticket_w, ticket_h = self.get_ticket_dimensions()
+        
+        cols = max(1, int(page_w // ticket_w))
+        rows = max(1, int(page_h // ticket_h))
+        
+        tickets_per_attendee = int(self.tickets_per_attendee_var.get())
+        rows_per_attendee = math.ceil(tickets_per_attendee / cols)
+        attendees_per_page = max(1, rows // rows_per_attendee)
+        
+        return cols, rows, attendees_per_page, rows_per_attendee
+    
+    def update_calc_display(self):
+        """Update the calculated layout info"""
+        cols, rows, attendees_per_page, rows_per_attendee = self.calculate_grid()
         tickets_per_attendee = int(self.tickets_per_attendee_var.get())
         
-        total_tickets = cols * rows
-        attendees = total_tickets // tickets_per_attendee
-        return max(1, attendees)
-    
-    def check_ticket_size(self):
-        """Check if ticket size is reasonable and return warnings"""
-        ticket_width, ticket_height = self.get_ticket_dimensions()
+        info = f"Layout: {cols}×{rows} grid  |  {attendees_per_page} attendee(s)/page  |  {rows_per_attendee} row(s)/attendee"
+        self.calc_label.config(text=info)
         
-        # Convert to inches for display
-        width_in = ticket_width / inch
-        height_in = ticket_height / inch
+        ticket_w = float(self.ticket_width_var.get())
+        ticket_h = float(self.ticket_height_var.get())
+        self.layout_info_label.config(text=f"Ticket: {ticket_w}\" × {ticket_h}\"  |  {tickets_per_attendee} per person")
         
-        warnings = []
-        
-        # Minimum size check (1.5" x 1")
-        if width_in < 1.5:
-            warnings.append(f"Width ({width_in:.2f}\") may be too narrow for text")
-        if height_in < 1.0:
-            warnings.append(f"Height ({height_in:.2f}\") may be too short for text")
-            
-        # Maximum size check (4.25" x 3.5")
-        if width_in > 4.25:
-            warnings.append(f"Width ({width_in:.2f}\") is quite large")
-        if height_in > 3.5:
-            warnings.append(f"Height ({height_in:.2f}\") is quite large")
-        
-        return width_in, height_in, warnings
+        wasted = (cols * rows_per_attendee) - tickets_per_attendee
+        if wasted > 0:
+            self.warning_label.config(text=f"Note: {wasted} empty slot(s) per attendee to keep rows separate")
+        else:
+            self.warning_label.config(text="")
         
     def select_csv(self):
         try:
             path = filedialog.askopenfilename(
-                title="Select your CSV file with attendee names",
+                title="Select CSV file with attendee names",
                 filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
             )
             if path:
@@ -277,7 +417,7 @@ class VoucherGeneratorApp:
     def select_image(self):
         try:
             path = filedialog.askopenfilename(
-                title="Select your voucher image",
+                title="Select voucher image",
                 filetypes=[("Image files", "*.jpg *.jpeg *.png *.gif *.bmp"), ("All files", "*.*")]
             )
             if path:
@@ -293,9 +433,9 @@ class VoucherGeneratorApp:
         """Enable generate button when both files are selected"""
         if self.csv_path and self.image_path and len(self.attendees) > 0:
             self.generate_btn.config(state=tk.NORMAL)
-            tickets_per_attendee = int(self.tickets_per_attendee_var.get())
-            total_tickets = len(self.attendees) * tickets_per_attendee
-            self.status_label.config(text=f"✓ Ready! {len(self.attendees)} attendees × {tickets_per_attendee} = {total_tickets} tickets", foreground="green")
+            tpa = int(self.tickets_per_attendee_var.get())
+            total = len(self.attendees) * tpa
+            self.status_label.config(text=f"✓ Ready! {len(self.attendees)} attendees × {tpa} = {total} tickets", foreground="green")
         else:
             self.generate_btn.config(state=tk.DISABLED)
             
@@ -313,36 +453,19 @@ class VoucherGeneratorApp:
                             full_name = row[0].strip()
                         attendees.append(full_name)
         except Exception as e:
-            messagebox.showerror("Error", f"Could not read CSV file:\n{e}")
+            messagebox.showerror("Error", f"Could not read CSV:\n{e}")
         return attendees
     
     def parse_name(self, full_name):
         """Parse name from 'Last, First' format"""
-        full_name = full_name.strip()
         if ',' in full_name:
             parts = full_name.split(',', 1)
-            last_name = parts[0].strip()
-            first_name = parts[1].strip() if len(parts) > 1 else ""
-            return first_name, last_name
-        else:
-            return full_name, ""
+            return parts[1].strip() if len(parts) > 1 else "", parts[0].strip()
+        return full_name.strip(), ""
             
     def update_preview(self):
-        """Update the preview canvas based on current mode"""
-        # Update calculated values
-        attendees_per_page = self.get_attendees_per_page()
-        self.calc_label.config(text=f"Attendees per page: {attendees_per_page}")
-        
-        # Update size info
-        width_in, height_in, warnings = self.check_ticket_size()
-        self.size_info_label.config(text=f"Ticket size: {width_in:.2f}\" × {height_in:.2f}\"")
-        
-        if warnings:
-            self.warning_label.config(text="⚠ " + "; ".join(warnings))
-        else:
-            self.warning_label.config(text="")
-        
-        # Update status if ready
+        """Update the preview canvas"""
+        self.update_calc_display()
         self.check_ready()
         
         if not self.voucher_image:
@@ -353,93 +476,122 @@ class VoucherGeneratorApp:
         else:
             self.update_layout_preview()
     
+    def resize_image_to_fit(self, img, target_w, target_h):
+        """Resize image to fit inside dimensions (no cropping)"""
+        img_ratio = img.width / img.height
+        target_ratio = target_w / target_h
+        
+        if img_ratio > target_ratio:
+            new_w = target_w
+            new_h = int(target_w / img_ratio)
+        else:
+            new_h = target_h
+            new_w = int(target_h * img_ratio)
+        
+        return img.resize((new_w, new_h), Image.LANCZOS)
+    
     def update_ticket_preview(self):
-        """Update preview showing single ticket"""
+        """Update preview showing single ticket with draggable text"""
         if not self.voucher_image:
             return
         
         try:
+            first_name, last_name = self.parse_name(self.attendees[0]) if self.attendees else ("First", "Last")
+            
+            ticket_w_in = float(self.ticket_width_var.get())
+            ticket_h_in = float(self.ticket_height_var.get())
+            aspect_ratio = ticket_w_in / ticket_h_in
+            
+            canvas_width = 500
+            canvas_height = 350
+            max_w, max_h = 460, 320
+            
+            if aspect_ratio > max_w / max_h:
+                preview_w = max_w
+                preview_h = int(max_w / aspect_ratio)
+            else:
+                preview_h = max_h
+                preview_w = int(max_h * aspect_ratio)
+            
+            # Store for drag calculations
+            self.preview_ticket_height = preview_h
+            self.preview_offset_y = (canvas_height - preview_h) // 2
+            
+            # Create ticket image
+            ticket = Image.new('RGB', (preview_w, preview_h), '#FFFFFF')
+            
+            if self.voucher_image:
+                fitted = self.resize_image_to_fit(self.voucher_image, preview_w, preview_h)
+                x = (preview_w - fitted.width) // 2
+                y = (preview_h - fitted.height) // 2
+                ticket.paste(fitted, (x, y))
+            
+            draw = ImageDraw.Draw(ticket)
+            
             title = self.title_var.get()
             font_size = int(self.font_size_var.get())
             bold = self.bold_var.get() == 1
             
-            if self.attendees:
-                first_name, last_name = self.parse_name(self.attendees[0])
-            else:
-                first_name, last_name = "First", "Last"
+            scale = min(preview_w / 216, preview_h / 126)
+            scaled_size = max(10, int(font_size * scale * 1.5))
             
-            # Get ticket aspect ratio
-            ticket_width, ticket_height = self.get_ticket_dimensions()
-            aspect_ratio = ticket_width / ticket_height
-            
-            # Create preview at appropriate size maintaining aspect ratio
-            max_preview_width = 420
-            max_preview_height = 300
-            
-            if aspect_ratio > max_preview_width / max_preview_height:
-                preview_width = max_preview_width
-                preview_height = int(max_preview_width / aspect_ratio)
-            else:
-                preview_height = max_preview_height
-                preview_width = int(max_preview_height * aspect_ratio)
-            
-            # Resize and crop image to fit ticket dimensions
-            preview_img = self.resize_image_to_fill(self.voucher_image, preview_width, preview_height)
-            
-            draw = ImageDraw.Draw(preview_img)
-            
-            # Scale font size based on preview size
-            scale = preview_height / 175  # Base scale
-            scaled_font_size = int(font_size * scale)
-            
-            # Try to load fonts
             try:
                 if bold:
-                    name_font = ImageFont.truetype("arialbd.ttf", scaled_font_size * 2)
+                    name_font = ImageFont.truetype("arialbd.ttf", scaled_size)
                 else:
-                    name_font = ImageFont.truetype("arial.ttf", scaled_font_size * 2)
-                title_font = ImageFont.truetype("arialbd.ttf", int(scaled_font_size * 1.5))
+                    name_font = ImageFont.truetype("arial.ttf", scaled_size)
+                title_font = ImageFont.truetype("arialbd.ttf", int(scaled_size * 0.8))
             except:
                 try:
                     if bold:
-                        name_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", scaled_font_size * 2)
+                        name_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", scaled_size)
                     else:
-                        name_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", scaled_font_size * 2)
-                    title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", int(scaled_font_size * 1.5))
+                        name_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", scaled_size)
+                    title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", int(scaled_size * 0.8))
                 except:
                     name_font = ImageFont.load_default()
                     title_font = ImageFont.load_default()
             
-            img_width, img_height = preview_img.size
-            center_x = img_width // 2
-            center_y = img_height // 2
-            
+            center_x = preview_w // 2
+            center_y = preview_h // 2
             text_color = (51, 38, 26)
             
+            # Draw title at draggable position
             if title.strip():
-                title_bbox = draw.textbbox((0, 0), title.upper(), font=title_font)
-                title_width = title_bbox[2] - title_bbox[0]
-                draw.text((center_x - title_width // 2, center_y - 45), title.upper(), fill=text_color, font=title_font)
-                name_y_offset = -5
-            else:
-                name_y_offset = -20
+                title_y = center_y + int(self.title_y_pos * preview_h)
+                bbox = draw.textbbox((0, 0), title.upper(), font=title_font)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+                draw.text((center_x - tw // 2, title_y - th // 2), title.upper(), fill=text_color, font=title_font)
+                
+                # Draw drag indicator
+                draw.rectangle([center_x - tw//2 - 5, title_y - th//2 - 3, 
+                               center_x + tw//2 + 5, title_y + th//2 + 3], outline="#2196F3", width=1)
             
-            fn_bbox = draw.textbbox((0, 0), first_name, font=name_font)
-            fn_width = fn_bbox[2] - fn_bbox[0]
-            draw.text((center_x - fn_width // 2, center_y + name_y_offset), first_name, fill=text_color, font=name_font)
+            # Draw name at draggable position
+            name_y = center_y + int(self.name_y_pos * preview_h)
+            full_name = f"{first_name} {last_name}".strip()
+            bbox = draw.textbbox((0, 0), full_name, font=name_font)
+            nw = bbox[2] - bbox[0]
+            nh = bbox[3] - bbox[1]
+            draw.text((center_x - nw // 2, name_y - nh // 2), full_name, fill=text_color, font=name_font)
             
-            ln_bbox = draw.textbbox((0, 0), last_name, font=name_font)
-            ln_width = ln_bbox[2] - ln_bbox[0]
-            draw.text((center_x - ln_width // 2, center_y + name_y_offset + scaled_font_size * 2 + 5), last_name, fill=text_color, font=name_font)
+            # Draw drag indicator for name
+            draw.rectangle([center_x - nw//2 - 5, name_y - nh//2 - 3, 
+                           center_x + nw//2 + 5, name_y + nh//2 + 3], outline="#4CAF50", width=1)
             
-            self.preview_photo = ImageTk.PhotoImage(preview_img)
+            self.preview_photo = ImageTk.PhotoImage(ticket)
             
             self.preview_canvas.delete("all")
-            canvas_width = 450
-            canvas_height = 320
-            x = (canvas_width - preview_img.width) // 2
-            y = (canvas_height - preview_img.height) // 2
+            x = (canvas_width - preview_w) // 2
+            y = (canvas_height - preview_h) // 2
             self.preview_canvas.create_image(x, y, anchor=tk.NW, image=self.preview_photo)
+            
+            # Draw legend
+            self.preview_canvas.create_text(10, canvas_height - 30, anchor=tk.W, 
+                                           text="■ Title", fill="#2196F3", font=("Arial", 9))
+            self.preview_canvas.create_text(60, canvas_height - 30, anchor=tk.W, 
+                                           text="■ Name", fill="#4CAF50", font=("Arial", 9))
             
         except Exception as e:
             print(f"Preview error: {e}")
@@ -448,150 +600,95 @@ class VoucherGeneratorApp:
     def update_layout_preview(self):
         """Update preview showing full page layout"""
         try:
-            page_width, page_height = self.get_page_dimensions()
-            cols = int(self.columns_var.get())
-            rows = int(self.rows_var.get())
+            page_w, page_h = self.get_page_dimensions()
+            cols, rows, attendees_per_page, rows_per_attendee = self.calculate_grid()
             tickets_per_attendee = int(self.tickets_per_attendee_var.get())
+            ticket_w, ticket_h = self.get_ticket_dimensions()
             
-            # Calculate preview scale to fit in canvas
-            canvas_width = 450
-            canvas_height = 320
+            canvas_width, canvas_height = 500, 350
             margin = 20
             
-            available_width = canvas_width - 2 * margin
-            available_height = canvas_height - 2 * margin
+            scale = min((canvas_width - 2*margin) / page_w, (canvas_height - 2*margin) / page_h)
             
-            scale_x = available_width / page_width
-            scale_y = available_height / page_height
-            scale = min(scale_x, scale_y)
+            pw = int(page_w * scale)
+            ph = int(page_h * scale)
+            tw = int(ticket_w * scale)
+            th = int(ticket_h * scale)
             
-            preview_page_width = int(page_width * scale)
-            preview_page_height = int(page_height * scale)
-            
-            # Create page image
-            page_img = Image.new('RGB', (preview_page_width, preview_page_height), 'white')
+            page_img = Image.new('RGB', (pw, ph), 'white')
             draw = ImageDraw.Draw(page_img)
             
-            # Calculate ticket size in preview
-            ticket_w = preview_page_width // cols
-            ticket_h = preview_page_height // rows
-            
-            # Load small font for labels
             try:
-                label_font = ImageFont.truetype("arial.ttf", 10)
+                font = ImageFont.truetype("arial.ttf", 9)
             except:
                 try:
-                    label_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+                    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 9)
                 except:
-                    label_font = ImageFont.load_default()
+                    font = ImageFont.load_default()
             
-            # Create a small version of the voucher image
-            if self.voucher_image:
-                ticket_img = self.resize_image_to_fill(self.voucher_image, ticket_w, ticket_h)
-            else:
-                ticket_img = None
+            mini = None
+            if self.voucher_image and tw > 10 and th > 10:
+                mini = Image.new('RGB', (tw, th), '#FFFFFF')
+                fitted = self.resize_image_to_fit(self.voucher_image, tw, th)
+                mini.paste(fitted, ((tw - fitted.width)//2, (th - fitted.height)//2))
             
-            # Draw tickets
-            attendee_num = 1
-            ticket_count = 0
+            gw = cols * tw
+            gh = rows * th
+            ox = (pw - gw) // 2
+            oy = (ph - gh) // 2
             
             for row in range(rows):
+                attendee_row = row // rows_per_attendee
+                row_in_attendee = row % rows_per_attendee
+                current_attendee = attendee_row + 1
+                
+                if current_attendee > attendees_per_page:
+                    break
+                
                 for col in range(cols):
-                    x = col * ticket_w
-                    y = row * ticket_h
+                    x = ox + col * tw
+                    y = oy + row * th
+                    ticket_idx = row_in_attendee * cols + col
                     
-                    if ticket_img:
-                        page_img.paste(ticket_img, (x, y))
+                    if ticket_idx < tickets_per_attendee:
+                        if mini:
+                            page_img.paste(mini, (x, y))
+                        draw.rectangle([x, y, x+tw-1, y+th-1], outline='#999')
+                        
+                        label = f"#{current_attendee}"
+                        bbox = draw.textbbox((0,0), label, font=font)
+                        lw, lh = bbox[2]-bbox[0], bbox[3]-bbox[1]
+                        lx, ly = x + (tw-lw)//2, y + (th-lh)//2
+                        draw.rectangle([lx-2, ly-2, lx+lw+2, ly+lh+2], fill='white', outline='#666')
+                        draw.text((lx, ly), label, fill='#333', font=font)
                     else:
-                        # Draw placeholder rectangle
-                        draw.rectangle([x, y, x + ticket_w - 1, y + ticket_h - 1], 
-                                       fill='#f5f5dc', outline='#ccc')
-                    
-                    # Draw grid lines
-                    draw.rectangle([x, y, x + ticket_w - 1, y + ticket_h - 1], outline='#999')
-                    
-                    # Draw attendee label
-                    label = f"Attendee {attendee_num}"
-                    label_bbox = draw.textbbox((0, 0), label, font=label_font)
-                    label_width = label_bbox[2] - label_bbox[0]
-                    label_x = x + (ticket_w - label_width) // 2
-                    label_y = y + ticket_h // 2 - 5
-                    
-                    # Draw label with background for readability
-                    padding = 2
-                    draw.rectangle([label_x - padding, label_y - padding, 
-                                   label_x + label_width + padding, label_y + 12 + padding],
-                                  fill='white', outline='#999')
-                    draw.text((label_x, label_y), label, fill='#333', font=label_font)
-                    
-                    ticket_count += 1
-                    if ticket_count >= tickets_per_attendee:
-                        ticket_count = 0
-                        attendee_num += 1
+                        draw.rectangle([x, y, x+tw-1, y+th-1], fill='#e0e0e0', outline='#ccc')
             
-            # Draw page border
-            draw.rectangle([0, 0, preview_page_width - 1, preview_page_height - 1], outline='#333', width=2)
+            draw.rectangle([0, 0, pw-1, ph-1], outline='#333', width=2)
             
             self.preview_photo = ImageTk.PhotoImage(page_img)
-            
             self.preview_canvas.delete("all")
-            x = (canvas_width - preview_page_width) // 2
-            y = (canvas_height - preview_page_height) // 2
-            self.preview_canvas.create_image(x, y, anchor=tk.NW, image=self.preview_photo)
+            self.preview_canvas.create_image((canvas_width-pw)//2, (canvas_height-ph)//2, anchor=tk.NW, image=self.preview_photo)
             
         except Exception as e:
-            print(f"Layout preview error: {e}")
+            print(f"Layout error: {e}")
             traceback.print_exc()
     
-    def resize_image_to_fill(self, img, target_width, target_height):
-        """Resize and crop image to fill exact dimensions (cover mode)"""
-        img_ratio = img.width / img.height
-        target_ratio = target_width / target_height
-        
-        if img_ratio > target_ratio:
-            # Image is wider - scale by height and crop width
-            new_height = target_height
-            new_width = int(target_height * img_ratio)
-        else:
-            # Image is taller - scale by width and crop height
-            new_width = target_width
-            new_height = int(target_width / img_ratio)
-        
-        # Resize
-        resized = img.resize((new_width, new_height), Image.LANCZOS)
-        
-        # Crop to center
-        left = (new_width - target_width) // 2
-        top = (new_height - target_height) // 2
-        right = left + target_width
-        bottom = top + target_height
-        
-        return resized.crop((left, top, right, bottom))
-    
     def generate_pdf(self):
-        """Handle generate button click"""
-        print("Generate PDF clicked!")
-        
-        if not self.csv_path or not self.image_path:
-            messagebox.showwarning("Missing Files", "Please select both a CSV file and an image first.")
-            return
-            
-        if not self.attendees:
-            messagebox.showwarning("No Attendees", "No attendees found in the CSV file.")
+        """Generate the PDF file"""
+        if not self.csv_path or not self.image_path or not self.attendees:
+            messagebox.showwarning("Missing Data", "Please select CSV and image files first.")
             return
         
         try:
             output_path = filedialog.asksaveasfilename(
                 title="Save PDF as...",
                 defaultextension=".pdf",
-                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+                filetypes=[("PDF files", "*.pdf")],
                 initialfile="drink_vouchers.pdf"
             )
             
-            print(f"Save path: {output_path}")
-            
             if not output_path:
-                print("No output path selected")
                 return
             
             self.status_label.config(text="Generating PDF...", foreground="blue")
@@ -599,118 +696,103 @@ class VoucherGeneratorApp:
             
             self.create_vouchers_pdf(output_path)
             
-            tickets_per_attendee = int(self.tickets_per_attendee_var.get())
-            total_tickets = len(self.attendees) * tickets_per_attendee
-            self.status_label.config(text=f"✓ Success! Created {total_tickets} vouchers", foreground="green")
-            messagebox.showinfo("Success", f"Created {total_tickets} vouchers!\n\nSaved to:\n{output_path}")
+            tpa = int(self.tickets_per_attendee_var.get())
+            total = len(self.attendees) * tpa
+            self.status_label.config(text=f"✓ Created {total} vouchers!", foreground="green")
+            messagebox.showinfo("Success", f"Created {total} vouchers!\n\nSaved to:\n{output_path}")
             
         except Exception as e:
-            error_msg = traceback.format_exc()
-            print(f"Error: {error_msg}")
             self.status_label.config(text="Error creating PDF", foreground="red")
-            messagebox.showerror("Error", f"Could not create PDF:\n{e}\n\nDetails:\n{error_msg}")
+            messagebox.showerror("Error", f"Could not create PDF:\n{e}")
+            traceback.print_exc()
             
     def create_vouchers_pdf(self, output_path):
-        """Generate the PDF with all vouchers - all tickets touching"""
-        
+        """Generate PDF with all vouchers"""
         title_text = self.title_var.get().strip()
         font_size = int(self.font_size_var.get())
         bold = self.bold_var.get() == 1
         
-        cols = int(self.columns_var.get())
-        rows = int(self.rows_var.get())
+        page_w, page_h = self.get_page_dimensions()
+        ticket_w, ticket_h = self.get_ticket_dimensions()
+        cols, rows, attendees_per_page, rows_per_attendee = self.calculate_grid()
         tickets_per_attendee = int(self.tickets_per_attendee_var.get())
         
-        page_width, page_height = self.get_page_dimensions()
-        pagesize = (page_width, page_height)
+        gw = cols * ticket_w
+        gh = rows * ticket_h
+        ox = (page_w - gw) / 2
+        oy = (page_h - gh) / 2
         
-        ticket_width = page_width / cols
-        ticket_height = page_height / rows
+        # Prepare ticket image
+        dpi_scale = 3
+        img_w = int(ticket_w * dpi_scale)
+        img_h = int(ticket_h * dpi_scale)
         
-        tickets_per_page = cols * rows
-        attendees_per_page = tickets_per_page // tickets_per_attendee
+        fitted = self.resize_image_to_fit(self.voucher_image, img_w, img_h)
+        ticket_img = Image.new('RGB', (img_w, img_h), '#FFFFFF')
+        ticket_img.paste(fitted, ((img_w - fitted.width)//2, (img_h - fitted.height)//2))
         
-        print(f"Creating PDF: {cols}x{rows} grid, {tickets_per_attendee} tickets/attendee")
-        print(f"Ticket size: {ticket_width/inch:.2f}\" x {ticket_height/inch:.2f}\"")
-        
-        # Prepare image - resize to match ticket aspect ratio
-        img_ratio = ticket_width / ticket_height
-        temp_img = self.resize_image_to_fill(self.voucher_image, 
-                                              int(ticket_width * 2), 
-                                              int(ticket_height * 2))
         temp_path = os.path.join(os.path.dirname(output_path), "_temp_voucher.png")
-        temp_img.save(temp_path, "PNG")
+        ticket_img.save(temp_path, "PNG")
         img_reader = ImageReader(temp_path)
         
-        c = canvas.Canvas(output_path, pagesize=pagesize)
+        c = canvas.Canvas(output_path, pagesize=(page_w, page_h))
         
-        # Track position on page
-        current_ticket = 0
-        
-        for attendee in self.attendees:
-            first_name, last_name = self.parse_name(attendee)
+        attendee_idx = 0
+        while attendee_idx < len(self.attendees):
+            for page_att in range(attendees_per_page):
+                if attendee_idx >= len(self.attendees):
+                    break
+                
+                first_name, last_name = self.parse_name(self.attendees[attendee_idx])
+                start_row = page_att * rows_per_attendee
+                ticket_count = 0
+                
+                for row_off in range(rows_per_attendee):
+                    if ticket_count >= tickets_per_attendee:
+                        break
+                    for col in range(cols):
+                        if ticket_count >= tickets_per_attendee:
+                            break
+                        
+                        row = start_row + row_off
+                        x = ox + col * ticket_w
+                        y = page_h - oy - (row + 1) * ticket_h
+                        
+                        c.drawImage(img_reader, x, y, width=ticket_w, height=ticket_h, mask='auto')
+                        
+                        center_x = x + ticket_w / 2
+                        center_y = y + ticket_h / 2
+                        
+                        c.setFillColorRGB(0.2, 0.15, 0.1)
+                        name_font = "Helvetica-Bold" if bold else "Helvetica"
+                        
+                        size_factor = min(ticket_w / (3*inch), ticket_h / (1.75*inch))
+                        scaled = max(6, int(font_size * size_factor))
+                        
+                        # Apply draggable positions
+                        if title_text:
+                            title_y = center_y + self.title_y_pos * ticket_h
+                            c.setFont("Helvetica-Bold", int(scaled * 0.8))
+                            c.drawCentredString(center_x, title_y, title_text.upper())
+                        
+                        name_y = center_y + self.name_y_pos * ticket_h
+                        full_name = f"{first_name} {last_name}".strip()
+                        c.setFont(name_font, scaled)
+                        c.drawCentredString(center_x, name_y, full_name)
+                        
+                        ticket_count += 1
+                
+                attendee_idx += 1
             
-            for ticket_num in range(tickets_per_attendee):
-                # Check if we need a new page
-                if current_ticket >= tickets_per_page:
-                    c.showPage()
-                    current_ticket = 0
-                
-                # Calculate position
-                col = current_ticket % cols
-                row = current_ticket // cols
-                
-                x = col * ticket_width
-                y = page_height - (row + 1) * ticket_height
-                
-                # Draw ticket image
-                c.drawImage(img_reader, x, y, width=ticket_width, height=ticket_height,
-                           preserveAspectRatio=False, mask='auto')
-                
-                # Draw text
-                center_x = x + (ticket_width / 2)
-                center_y = y + (ticket_height / 2)
-                
-                c.setFillColorRGB(0.2, 0.15, 0.1)
-                
-                if bold:
-                    name_font = "Helvetica-Bold"
-                else:
-                    name_font = "Helvetica"
-                
-                # Scale font based on ticket size
-                size_factor = min(ticket_width / (3 * inch), ticket_height / (1.75 * inch))
-                scaled_font_size = int(font_size * size_factor)
-                title_font_size = int(scaled_font_size * 0.8)
-                lastname_font_size = int(scaled_font_size * 0.9)
-                
-                if title_text:
-                    c.setFont("Helvetica-Bold", title_font_size)
-                    c.drawCentredString(center_x, center_y + 22 * size_factor, title_text.upper())
-                    
-                    c.setFont(name_font, scaled_font_size)
-                    c.drawCentredString(center_x, center_y + 2 * size_factor, first_name)
-                    
-                    c.setFont(name_font, lastname_font_size)
-                    c.drawCentredString(center_x, center_y - 14 * size_factor, last_name)
-                else:
-                    c.setFont(name_font, scaled_font_size)
-                    c.drawCentredString(center_x, center_y + 8 * size_factor, first_name)
-                    
-                    c.setFont(name_font, lastname_font_size)
-                    c.drawCentredString(center_x, center_y - 10 * size_factor, last_name)
-                
-                current_ticket += 1
+            if attendee_idx < len(self.attendees):
+                c.showPage()
         
         c.save()
         
-        # Clean up temp file
         try:
             os.remove(temp_path)
         except:
             pass
-        
-        print(f"PDF saved to: {output_path}")
 
 
 def main():
