@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Drink Voucher Generator
+Alyssa's Voucher Generator
 GUI app with live preview for creating personalized drink vouchers.
 Repository: https://github.com/riconanci/TicketGen
 """
@@ -21,7 +21,7 @@ import traceback
 class VoucherGeneratorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Drink Voucher Generator")
+        self.root.title("Alyssa's Voucher Generator")
         self.root.geometry("720x860")
         self.root.resizable(False, False)
         
@@ -74,12 +74,11 @@ class VoucherGeneratorApp:
         main_frame = ttk.Frame(self.root, padding="8")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # === MENU BAR ===
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
-        help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Help", menu=help_menu)
-        help_menu.add_command(label="About", command=self.show_about)
+        # === ABOUT BUTTON (top-right) ===
+        about_row = ttk.Frame(main_frame)
+        about_row.pack(fill=tk.X, pady=(0, 4))
+        about_btn = tk.Button(about_row, text="About", command=self.show_about, padx=10, pady=2)
+        about_btn.pack(side=tk.RIGHT)
         
         # === FILE SELECTION ===
         file_frame = ttk.LabelFrame(main_frame, text="Step 1: Select Files", padding="6")
@@ -100,7 +99,7 @@ class VoucherGeneratorApp:
         
         # === PREVIEW ===
         preview_frame = ttk.LabelFrame(main_frame, text="Preview (drag title/name to reposition)", padding="4")
-        preview_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
+        preview_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 1))
         
         toggle_row = ttk.Frame(preview_frame)
         toggle_row.pack(pady=(0, 2))
@@ -128,80 +127,70 @@ class VoucherGeneratorApp:
         text_frame = ttk.LabelFrame(main_frame, text="Step 2: Text Settings", padding="6")
         text_frame.pack(fill=tk.X, pady=(0, 4))
         
+        # Use grid for perfect alignment
         # Header row
-        header_row = ttk.Frame(text_frame)
-        header_row.pack(fill=tk.X, pady=(0, 2))
-        ttk.Label(header_row, text="", width=6).pack(side=tk.LEFT)
-        ttk.Label(header_row, text="", width=18).pack(side=tk.LEFT)  # Spacer for entry/label
-        ttk.Label(header_row, text="Size", width=6).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Label(header_row, text="Bold", width=5).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Label(header_row, text="Color", width=5).pack(side=tk.LEFT, padx=(12, 0))
-        ttk.Label(header_row, text="Outline", width=8).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Label(text_frame, text="").grid(row=0, column=0, sticky='w', padx=(0, 5))
+        ttk.Label(text_frame, text="").grid(row=0, column=1, sticky='w')
+        ttk.Label(text_frame, text="Size").grid(row=0, column=2, padx=(8, 0))
+        ttk.Label(text_frame, text="Bold").grid(row=0, column=3, padx=(8, 0))
+        ttk.Label(text_frame, text="Color").grid(row=0, column=4, padx=(8, 0))
+        ttk.Label(text_frame, text="Outline").grid(row=0, column=5, padx=(8, 0))
         
         # Title row
-        title_row = ttk.Frame(text_frame)
-        title_row.pack(fill=tk.X, pady=2)
-        
-        ttk.Label(title_row, text="Title:", width=6).pack(side=tk.LEFT)
-        title_entry = ttk.Entry(title_row, textvariable=self.title_var, width=18)
-        title_entry.pack(side=tk.LEFT)
+        ttk.Label(text_frame, text="Title:").grid(row=1, column=0, sticky='w', padx=(0, 5), pady=2)
+        title_entry = ttk.Entry(text_frame, textvariable=self.title_var, width=18)
+        title_entry.grid(row=1, column=1, sticky='w', pady=2)
         title_entry.bind('<KeyRelease>', lambda e: self.on_step2_interact())
         title_entry.bind('<FocusIn>', lambda e: self.on_step2_interact())
         
-        title_size = ttk.Combobox(title_row, textvariable=self.title_font_size_var, 
+        title_size = ttk.Combobox(text_frame, textvariable=self.title_font_size_var, 
                                    values=["8", "9", "10", "11", "12", "14", "16", "18", "20", "24"], width=4, state="readonly")
-        title_size.pack(side=tk.LEFT, padx=(8, 0))
+        title_size.grid(row=1, column=2, padx=(8, 0), pady=2)
         title_size.bind('<<ComboboxSelected>>', lambda e: self.on_step2_interact())
         title_size.bind('<Button-1>', lambda e: self.set_preview_mode("ticket"))
         
-        self.title_bold_check = tk.Checkbutton(title_row, text="", variable=self.title_bold_var, 
+        self.title_bold_check = tk.Checkbutton(text_frame, text="", variable=self.title_bold_var, 
                                                 command=self.on_step2_interact)
-        self.title_bold_check.pack(side=tk.LEFT, padx=(12, 0))
+        self.title_bold_check.grid(row=1, column=3, padx=(8, 0), pady=2)
         self.title_bold_check.bind('<Button-1>', lambda e: self.set_preview_mode("ticket"))
         
-        self.title_color_btn = tk.Button(title_row, text="  ", command=self.pick_title_color, 
+        self.title_color_btn = tk.Button(text_frame, text="  ", command=self.pick_title_color, 
                                           bg=self.title_color, width=3)
-        self.title_color_btn.pack(side=tk.LEFT, padx=(12, 0))
+        self.title_color_btn.grid(row=1, column=4, padx=(8, 0), pady=2)
         
-        self.title_outline_check = tk.Checkbutton(title_row, text="", variable=self.title_outline_var, 
+        self.title_outline_check = tk.Checkbutton(text_frame, text="", variable=self.title_outline_var, 
                                                    command=self.on_step2_interact)
-        self.title_outline_check.pack(side=tk.LEFT, padx=(16, 0))
+        self.title_outline_check.grid(row=1, column=5, padx=(8, 0), pady=2)
         self.title_outline_check.bind('<Button-1>', lambda e: self.set_preview_mode("ticket"))
         
         # Name row
-        name_row = ttk.Frame(text_frame)
-        name_row.pack(fill=tk.X, pady=2)
+        ttk.Label(text_frame, text="Name:").grid(row=2, column=0, sticky='w', padx=(0, 5), pady=2)
+        ttk.Label(text_frame, text="(from CSV)", foreground="gray").grid(row=2, column=1, sticky='w', pady=2)
         
-        ttk.Label(name_row, text="Name:", width=6).pack(side=tk.LEFT)
-        ttk.Label(name_row, text="(from CSV)", foreground="gray", width=18, anchor='w').pack(side=tk.LEFT)
-        
-        name_size = ttk.Combobox(name_row, textvariable=self.name_font_size_var, 
+        name_size = ttk.Combobox(text_frame, textvariable=self.name_font_size_var, 
                                   values=["8", "9", "10", "11", "12", "14", "16", "18", "20", "24"], width=4, state="readonly")
-        name_size.pack(side=tk.LEFT, padx=(8, 0))
+        name_size.grid(row=2, column=2, padx=(8, 0), pady=2)
         name_size.bind('<<ComboboxSelected>>', lambda e: self.on_step2_interact())
         name_size.bind('<Button-1>', lambda e: self.set_preview_mode("ticket"))
         
-        self.name_bold_check = tk.Checkbutton(name_row, text="", variable=self.name_bold_var, 
+        self.name_bold_check = tk.Checkbutton(text_frame, text="", variable=self.name_bold_var, 
                                                command=self.on_step2_interact)
-        self.name_bold_check.pack(side=tk.LEFT, padx=(12, 0))
+        self.name_bold_check.grid(row=2, column=3, padx=(8, 0), pady=2)
         self.name_bold_check.bind('<Button-1>', lambda e: self.set_preview_mode("ticket"))
         
-        self.name_color_btn = tk.Button(name_row, text="  ", command=self.pick_name_color, 
+        self.name_color_btn = tk.Button(text_frame, text="  ", command=self.pick_name_color, 
                                          bg=self.name_color, width=3)
-        self.name_color_btn.pack(side=tk.LEFT, padx=(12, 0))
+        self.name_color_btn.grid(row=2, column=4, padx=(8, 0), pady=2)
         
-        self.name_outline_check = tk.Checkbutton(name_row, text="", variable=self.name_outline_var, 
+        self.name_outline_check = tk.Checkbutton(text_frame, text="", variable=self.name_outline_var, 
                                                   command=self.on_step2_interact)
-        self.name_outline_check.pack(side=tk.LEFT, padx=(16, 0))
+        self.name_outline_check.grid(row=2, column=5, padx=(8, 0), pady=2)
         self.name_outline_check.bind('<Button-1>', lambda e: self.set_preview_mode("ticket"))
         
         # Swap names row
-        swap_row = ttk.Frame(text_frame)
-        swap_row.pack(fill=tk.X, pady=2)
-        ttk.Label(swap_row, text="", width=6).pack(side=tk.LEFT)
-        self.swap_names_check = tk.Checkbutton(swap_row, text="Swap First/Last name order", 
+        self.swap_names_check = tk.Checkbutton(text_frame, text="Swap First/Last name order", 
                                                 variable=self.swap_names_var, command=self.on_step2_interact)
-        self.swap_names_check.pack(side=tk.LEFT)
+        self.swap_names_check.grid(row=3, column=1, columnspan=5, sticky='w', pady=2)
         self.swap_names_check.bind('<Button-1>', lambda e: self.set_preview_mode("ticket"))
         
         # === LAYOUT SETTINGS ===
@@ -282,22 +271,24 @@ class VoucherGeneratorApp:
         """Show About dialog"""
         about_window = tk.Toplevel(self.root)
         about_window.title("About")
-        about_window.geometry("280x150")
+        about_window.geometry("260x160")
         about_window.resizable(False, False)
         about_window.transient(self.root)
         about_window.grab_set()
         
         # Center on parent
-        about_window.geometry(f"+{self.root.winfo_x() + 200}+{self.root.winfo_y() + 200}")
+        about_window.geometry(f"+{self.root.winfo_x() + 230}+{self.root.winfo_y() + 250}")
         
         frame = ttk.Frame(about_window, padding="20")
         frame.pack(fill=tk.BOTH, expand=True)
         
-        ttk.Label(frame, text="Ticket Generator", font=("Arial", 16, "bold")).pack(pady=(0, 5))
-        ttk.Label(frame, text="Version 1.0", font=("Arial", 11)).pack(pady=(0, 15))
-        ttk.Label(frame, text="made for Alyssa with love - R", font=("Arial", 8), foreground="gray").pack(pady=(0, 15))
+        ttk.Label(frame, text="Alyssa's", font=("Arial", 20, "bold")).pack(pady=(0, 0))
+        ttk.Label(frame, text="Ticket Voucher", font=("Arial", 14)).pack(pady=(0, 10))
+        ttk.Label(frame, text="made with love - R", font=("Arial", 9), foreground="gray").pack(pady=(0, 15))
         
-        tk.Button(frame, text="Close", command=about_window.destroy, padx=15).pack()
+        close_btn = tk.Button(frame, text="Close", command=about_window.destroy, 
+                               padx=25, pady=8, font=("Arial", 10))
+        close_btn.pack()
     
     def on_step3_interact(self):
         """Called when orientation, tickets, or align changes - auto-fits to image"""
