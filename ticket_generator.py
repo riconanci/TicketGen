@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Alyssa's Ticket Generator
+Alyssa's Ticket Maker
 GUI app with live preview for creating personalized drink tickets.
 Repository: https://github.com/riconanci/TicketGen
 """
@@ -40,7 +40,7 @@ def resource_path(relative_path):
 class TicketGeneratorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Alyssa's Ticket Generator")
+        self.root.title("Alyssa's Ticket Maker")
         self.root.geometry("720x930")
         self.root.resizable(False, False)
         
@@ -71,6 +71,8 @@ class TicketGeneratorApp:
         self.name_outline_var = tk.IntVar(value=0)
         self.name_underline_var = tk.IntVar(value=0)
         self.swap_names_var = tk.IntVar(value=0)  # Swap first/last name order
+        self.hide_last_name_var = tk.IntVar(value=0)  # Hide last name (show first only)
+        self.auto_fit_names_var = tk.IntVar(value=1)  # Auto-shrink long names to fit (default on)
         
         # Layout variables
         self.orientation_var = tk.StringVar(value="Portrait")
@@ -78,7 +80,7 @@ class TicketGeneratorApp:
         self.ticket_height_var = tk.StringVar(value="1.75")
         self.tickets_per_attendee_var = tk.StringVar(value="5")
         self.align_top_left_var = tk.IntVar(value=1)
-        self.batch_mode_var = tk.IntVar(value=1)  # Group tickets by attendee (default on)
+        self.batch_mode_var = tk.IntVar(value=0)  # Group tickets by attendee (default off)
         self.cutting_guides_var = tk.IntVar(value=1)  # Dotted cutting lines (default on)
         self.bw_mode_var = tk.IntVar(value=0)  # Black and white mode (default off)
         
@@ -94,10 +96,14 @@ class TicketGeneratorApp:
         self.counter_start_var = tk.StringVar(value="1")  # For blanks mode: starting number
         self.counter_x_pos = 0.0  # X position (percentage from center, negative=left, positive=right)
         self.counter_y_pos = 0.35  # Y position (percentage from center, negative=up, positive=down)
+        self.counter_rotation = 0  # Rotation in degrees (0, 90, 180, 270)
         
-        # Draggable text positions (percentage from center, negative=up, positive=down)
+        # Draggable text positions (percentage from center, negative=up/left, positive=down/right)
         self.title_y_pos = -0.25
+        self.title_x_pos = 0.0
         self.name_y_pos = 0.08
+        self.name_x_pos = 0.0
+        self.center_lock_var = tk.IntVar(value=1)  # Lock title/name to center horizontally (default on)
         
         # Dragging state
         self.dragging = None
@@ -108,6 +114,12 @@ class TicketGeneratorApp:
         self.preview_ticket_height = 0
         self.preview_ticket_width = 0
         self.preview_offset_y = 0
+        self.preview_offset_x = 0
+        
+        # Bounding boxes for click detection (in canvas coordinates)
+        self.title_bbox = None  # (x1, y1, x2, y2)
+        self.name_bbox = None
+        self.counter_bbox = None
         
         self.setup_ui()
         self.update_valid_sizes()
@@ -144,7 +156,7 @@ class TicketGeneratorApp:
         file_row = ttk.Frame(file_frame)
         file_row.pack(fill=tk.X)
         
-        self.csv_btn = ttk.Button(file_row, text="Select CSV", command=self.select_csv, bootstyle="success")
+        self.csv_btn = ttk.Button(file_row, text="Select CSV", command=self.select_csv, bootstyle="success-outline", width=12)
         self.csv_btn.pack(side=tk.LEFT)
         self.csv_label = ttk.Label(file_row, text="No file", foreground="gray")
         self.csv_label.pack(side=tk.LEFT, padx=(8, 15))
@@ -190,7 +202,7 @@ class TicketGeneratorApp:
         
         ttk.Label(counter_row, text="Size:").pack(side=tk.LEFT, padx=(5, 2))
         self.counter_size_combo = ttk.Combobox(counter_row, textvariable=self.counter_size_var,
-                                                values=["8", "9", "10", "11", "12", "14", "16"], width=4, state="readonly")
+                                                values=["8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "22", "24", "26", "28", "30", "35", "40", "50"], width=4, state="readonly")
         self.counter_size_combo.pack(side=tk.LEFT, padx=(0, 5))
         self.counter_size_combo.bind('<<ComboboxSelected>>', lambda e: self.update_preview())
         
@@ -200,9 +212,18 @@ class TicketGeneratorApp:
         self.counter_color_combo.pack(side=tk.LEFT)
         self.counter_color_combo.bind('<<ComboboxSelected>>', lambda e: self.update_preview())
         
-        # Toggle row with rotate button
+        self.counter_rotate_btn = ttk.Button(counter_row, text="↻", command=self.rotate_counter, 
+                                              bootstyle="dark", width=2)
+        self.counter_rotate_btn.pack(side=tk.LEFT, padx=(8, 0))
+        
+        # Toggle row - Single Ticket/Page Layout centered, Rotate/Lock follow after
         toggle_row = ttk.Frame(preview_frame)
         toggle_row.pack(pady=(0, 2))
+        
+        # Add left padding to offset the Rotate/Lock buttons so Single Ticket/Page Layout are centered
+        left_pad = ttk.Frame(toggle_row, width=90)
+        left_pad.pack(side=tk.LEFT)
+        left_pad.pack_propagate(False)
         
         self.ticket_btn = ttk.Button(toggle_row, text="Single Ticket", command=lambda: self.set_preview_mode("ticket"),
                                       bootstyle="primary")
@@ -210,10 +231,14 @@ class TicketGeneratorApp:
         
         self.layout_btn = ttk.Button(toggle_row, text="Page Layout", command=lambda: self.set_preview_mode("layout"),
                                       bootstyle="dark")
-        self.layout_btn.pack(side=tk.LEFT, padx=(0, 15))
+        self.layout_btn.pack(side=tk.LEFT, padx=(0, 5))
         
-        self.rotate_btn = ttk.Button(toggle_row, text="↻ Rotate", command=self.rotate_ticket, bootstyle="dark")
-        self.rotate_btn.pack(side=tk.LEFT)
+        self.rotate_btn = ttk.Button(toggle_row, text="↻ Rotate", command=self.rotate_ticket, bootstyle="warning")
+        self.rotate_btn.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.center_lock_check = ttk.Checkbutton(toggle_row, text="Center Lock", variable=self.center_lock_var,
+                                                  command=self.on_center_lock_change, bootstyle="primary")
+        self.center_lock_check.pack(side=tk.LEFT)
         
         self.preview_canvas = tk.Canvas(preview_frame, width=500, height=240, bg="white", relief="solid", bd=1, 
                                          highlightthickness=2, highlightbackground="#666666")
@@ -283,7 +308,7 @@ class TicketGeneratorApp:
         ttk.Label(params_frame, text="Title:", width=10).grid(row=1, column=0, sticky='w', pady=4)
         
         title_size = ttk.Combobox(params_frame, textvariable=self.title_font_size_var, 
-                                   values=["8", "9", "10", "11", "12", "13", "14", "16", "18", "20", "24"], width=5, state="readonly")
+                                   values=["8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "22", "24", "26", "28", "30", "35", "40", "50"], width=5, state="readonly")
         title_size.grid(row=1, column=1, padx=(0, 8), pady=4)
         title_size.bind('<<ComboboxSelected>>', lambda e: self.on_step2_interact())
         title_size.bind('<Button-1>', lambda e: self.set_preview_mode("ticket"))
@@ -314,7 +339,7 @@ class TicketGeneratorApp:
         self.name_row_label.grid(row=2, column=0, sticky='w', pady=4)
         
         name_size = ttk.Combobox(params_frame, textvariable=self.name_font_size_var, 
-                                  values=["8", "9", "10", "11", "12", "13", "14", "16", "18", "20", "24"], width=5, state="readonly")
+                                  values=["8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "22", "24", "26", "28", "30", "35", "40", "50"], width=5, state="readonly")
         name_size.grid(row=2, column=1, padx=(0, 8), pady=4)
         name_size.bind('<<ComboboxSelected>>', lambda e: self.on_step2_interact())
         name_size.bind('<Button-1>', lambda e: self.set_preview_mode("ticket"))
@@ -349,6 +374,16 @@ class TicketGeneratorApp:
                                                  variable=self.swap_names_var, command=self.on_step2_interact, bootstyle="primary")
         self.swap_names_check.pack(side=tk.LEFT)
         self.swap_names_check.bind('<Button-1>', lambda e: self.set_preview_mode("ticket"))
+        
+        self.hide_last_name_check = ttk.Checkbutton(self.swap_row, text="Hide Last Name", 
+                                                     variable=self.hide_last_name_var, command=self.on_step2_interact, bootstyle="primary")
+        self.hide_last_name_check.pack(side=tk.LEFT, padx=(15, 0))
+        self.hide_last_name_check.bind('<Button-1>', lambda e: self.set_preview_mode("ticket"))
+        
+        self.auto_fit_names_check = ttk.Checkbutton(self.swap_row, text="Auto-fit Long Names", 
+                                                     variable=self.auto_fit_names_var, command=self.on_step2_interact, bootstyle="primary")
+        self.auto_fit_names_check.pack(side=tk.LEFT, padx=(15, 0))
+        self.auto_fit_names_check.bind('<Button-1>', lambda e: self.set_preview_mode("ticket"))
         
         # === LAYOUT SETTINGS ===
         layout_frame = ttk.Labelframe(main_frame, text="Step 3: Ticket Size & Layout", padding="6", bootstyle="primary")
@@ -555,7 +590,7 @@ class TicketGeneratorApp:
         canvas.create_text(center_x, 45, text="Alyssa's", 
                           font=("Segoe UI", 22, "bold"), fill="#1e8449")
         
-        canvas.create_text(center_x, 80, text="Ticket Generator", 
+        canvas.create_text(center_x, 80, text="Ticket Maker", 
                           font=("Segoe UI", 13), fill="#2e7d4a")
         
         canvas.create_text(center_x, 115, text="version 1.0", 
@@ -653,10 +688,10 @@ class TicketGeneratorApp:
         self.help_window = tk.Toplevel(self.root)
         self.help_window.title("Help - How to Use")
         self.help_window.transient(self.root)
-        self.help_window.resizable(False, False)
+        self.help_window.resizable(True, True)
         
         # Window size and position
-        win_w, win_h = 520, 580
+        win_w, win_h = 540, 640
         x = self.root.winfo_x() + 50
         y = self.root.winfo_y() + 50
         self.help_window.geometry(f"{win_w}x{win_h}+{x}+{y}")
@@ -682,18 +717,22 @@ class TicketGeneratorApp:
         text.tag_configure("tip", font=("Segoe UI", 10, "italic"), foreground="#666")
         
         # Help content
-        text.insert(tk.END, "How to Use the Ticket Generator\n\n", "title")
+        text.insert(tk.END, "How to Use the Ticket Maker\n\n", "title")
         
         text.insert(tk.END, "STEP 1: Prepare Your Files\n", "heading")
         text.insert(tk.END, """Create your attendee list in Excel (or any spreadsheet app) and save/export it as a CSV file. Names should be in Column A in the format "Last Name, First Name" — but don't worry, you can swap the order later with a checkbox.
 
-Select a cropped image of your ticket design. This will be used as the background for each ticket.\n\n""", "body")
+Select a cropped image of your ticket design. This will be used as the background for each ticket.
+
+You can drag and drop files anywhere on the app window, or use the Select buttons. Once a CSV is loaded, the button changes to "Remove CSV" — click it to unload and start fresh.\n\n""", "body")
         
         text.insert(tk.END, "STEP 2: Customize Text Settings\n", "heading")
-        text.insert(tk.END, """• Title: Add optional text above the name (like "DRINK TICKET")
+        text.insert(tk.END, """• Title: Add optional text above the name (displays as typed)
 • Name: Customize font, size, color, and style (bold, outline, underline)
 • Use the color picker buttons to choose custom colors
-• "Swap First/Last" switches the display order of names\n\n""", "body")
+• "Swap First/Last" switches the display order of names
+• "Hide Last Name" shows only the first name on tickets
+• "Auto-fit Long Names" automatically shrinks long names to fit the ticket width\n\n""", "body")
         
         text.insert(tk.END, "STEP 3: Configure Layout\n", "heading")
         text.insert(tk.END, """• Page: Choose Portrait or Landscape orientation
@@ -706,10 +745,11 @@ Select a cropped image of your ticket design. This will be used as the backgroun
         text.insert(tk.END, "Using the Preview\n", "heading")
         text.insert(tk.END, """The preview shows how your tickets will look. You can:
 
-• Drag the Title (blue box) up or down to reposition
-• Drag the Name (green box) up or down to reposition  
+• Drag the Title (blue box) to reposition
+• Drag the Name (green box) to reposition  
 • Switch between "Single Ticket" and "Page Layout" views
-• Use the Rotate button to flip ticket dimensions
+• Use the Rotate button to rotate your image 90°
+• Toggle "Center Lock" to keep text horizontally centered
 
 The colored boxes show drag zones — they won't appear on the final PDF.\n\n""", "body")
         
@@ -719,7 +759,8 @@ The colored boxes show drag zones — they won't appear on the final PDF.\n\n"""
 • Per Attendee: Numbers 1, 2, 3... for each person's tickets (resets per person)
 • Sequential: Numbers all tickets continuously (1, 2, 3... to total)
 • Drag the counter box freely to position it anywhere on the ticket
-• Choose Red (classic ticket style) or Black color\n\n""", "body")
+• Choose Red (classic ticket style) or Black color
+• Use the rotate button next to the counter to rotate numbers\n\n""", "body")
         
         text.insert(tk.END, "Blanks Mode\n", "heading")
         text.insert(tk.END, """Click the "Blanks" button to create tickets without names — perfect for general admission or write-in tickets.
@@ -736,6 +777,7 @@ In Blanks mode:
         text.insert(tk.END, """• Use B&W checkbox to convert your ticket image to grayscale
 • The Page Layout preview shows exactly how tickets fit on the page
 • Ticket counts update automatically when you change settings
+• Font sizes go up to 50 for large text on bigger tickets
 • Click "Generate PDF" when ready — you'll choose where to save it""", "tip")
         
         # Make text read-only
@@ -963,16 +1005,29 @@ In Blanks mode:
         self.update_preview()
     
     def rotate_ticket(self):
-        """Rotate ticket by swapping width and height dimensions"""
-        current_w = self.ticket_width_var.get()
-        current_h = self.ticket_height_var.get()
+        """Rotate the ticket image 90 degrees clockwise"""
+        if not self.ticket_image:
+            return
         
-        # Swap dimensions
-        self.ticket_width_var.set(current_h)
-        self.ticket_height_var.set(current_w)
+        # Rotate the image 90 degrees clockwise
+        self.ticket_image = self.ticket_image.rotate(-90, expand=True)
+        self.image_aspect_ratio = self.ticket_image.width / self.ticket_image.height
         
-        # Update valid sizes and preview
-        self.update_valid_sizes()
+        # Auto-fit to new aspect ratio
+        self.auto_fit_to_image()
+        self.update_preview()
+    
+    def rotate_counter(self):
+        """Rotate counter number by 90 degrees"""
+        self.counter_rotation = (self.counter_rotation + 90) % 360
+        self.update_preview()
+    
+    def on_center_lock_change(self):
+        """Called when center lock checkbox is toggled"""
+        if self.center_lock_var.get():
+            # Reset X positions to center when locking
+            self.title_x_pos = 0.0
+            self.name_x_pos = 0.0
         self.update_preview()
     
     def on_counter_mode_change(self):
@@ -1067,26 +1122,39 @@ In Blanks mode:
         if event.x < ticket_left or event.x > ticket_right:
             return
         
-        relative_y = (event.y - ticket_top) / self.preview_ticket_height - 0.5
-        relative_x = (event.x - ticket_left) / self.preview_ticket_width - 0.5
+        # Helper to check if point is inside a bounding box
+        def in_bbox(bbox):
+            if bbox is None:
+                return False
+            x1, y1, x2, y2 = bbox
+            return x1 <= event.x <= x2 and y1 <= event.y <= y2
         
-        if abs(relative_y - self.title_y_pos) < 0.12:
-            self.dragging = "title"
-            self.drag_start_y = event.y
-            self.drag_start_pos = self.title_y_pos
-            self.preview_canvas.config(cursor="sb_v_double_arrow")
-        elif abs(relative_y - self.name_y_pos) < 0.15:
-            self.dragging = "name"
-            self.drag_start_y = event.y
-            self.drag_start_pos = self.name_y_pos
-            self.preview_canvas.config(cursor="sb_v_double_arrow")
-        elif self.counter_enabled_var.get() and abs(relative_y - self.counter_y_pos) < 0.12 and abs(relative_x - self.counter_x_pos) < 0.2:
+        # Check counter first (so it has priority when overlapping)
+        if self.counter_enabled_var.get() and in_bbox(self.counter_bbox):
             self.dragging = "counter"
             self.drag_start_x = event.x
             self.drag_start_y = event.y
             self.drag_start_pos_x = self.counter_x_pos
             self.drag_start_pos = self.counter_y_pos
             self.preview_canvas.config(cursor="fleur")  # 4-way arrow for free movement
+        elif in_bbox(self.title_bbox):
+            self.dragging = "title"
+            self.drag_start_x = event.x
+            self.drag_start_y = event.y
+            self.drag_start_pos_x = self.title_x_pos
+            self.drag_start_pos = self.title_y_pos
+            # Use 4-way cursor if unlocked, vertical if locked
+            cursor = "sb_v_double_arrow" if self.center_lock_var.get() else "fleur"
+            self.preview_canvas.config(cursor=cursor)
+        elif in_bbox(self.name_bbox):
+            self.dragging = "name"
+            self.drag_start_x = event.x
+            self.drag_start_y = event.y
+            self.drag_start_pos_x = self.name_x_pos
+            self.drag_start_pos = self.name_y_pos
+            # Use 4-way cursor if unlocked, vertical if locked
+            cursor = "sb_v_double_arrow" if self.center_lock_var.get() else "fleur"
+            self.preview_canvas.config(cursor=cursor)
     
     def on_canvas_drag(self, event):
         if not self.dragging or self.preview_ticket_height == 0:
@@ -1097,8 +1165,18 @@ In Blanks mode:
         
         if self.dragging == "title":
             self.title_y_pos = new_pos_y
+            # Handle X movement if unlocked
+            if not self.center_lock_var.get() and self.preview_ticket_width > 0:
+                delta_x = (event.x - self.drag_start_x) / self.preview_ticket_width
+                new_pos_x = max(-0.45, min(0.45, self.drag_start_pos_x + delta_x))
+                self.title_x_pos = new_pos_x
         elif self.dragging == "name":
             self.name_y_pos = new_pos_y
+            # Handle X movement if unlocked
+            if not self.center_lock_var.get() and self.preview_ticket_width > 0:
+                delta_x = (event.x - self.drag_start_x) / self.preview_ticket_width
+                new_pos_x = max(-0.45, min(0.45, self.drag_start_pos_x + delta_x))
+                self.name_x_pos = new_pos_x
         elif self.dragging == "counter":
             self.counter_y_pos = new_pos_y
             # Also handle X movement for counter
@@ -1211,27 +1289,27 @@ In Blanks mode:
                 self.calc_info_label.configure(text="")
         
     def setup_drag_drop(self):
-        """Setup drag and drop functionality for the preview canvas"""
+        """Setup drag and drop functionality for the entire app window"""
         try:
-            self.preview_canvas.drop_target_register(DND_FILES)
-            self.preview_canvas.dnd_bind('<<Drop>>', self.handle_drop)
+            self.root.drop_target_register(DND_FILES)
+            self.root.dnd_bind('<<Drop>>', self.handle_drop)
             
             # Visual feedback on drag enter/leave
-            self.preview_canvas.dnd_bind('<<DragEnter>>', self.on_drag_enter)
-            self.preview_canvas.dnd_bind('<<DragLeave>>', self.on_drag_leave)
+            self.root.dnd_bind('<<DragEnter>>', self.on_drag_enter)
+            self.root.dnd_bind('<<DragLeave>>', self.on_drag_leave)
         except Exception as e:
             print(f"Drag-drop setup failed: {e}")
     
     def on_drag_enter(self, event):
-        """Visual feedback when dragging over canvas"""
+        """Visual feedback when dragging over window"""
         self.preview_canvas.configure(highlightbackground="#2196F3", highlightthickness=3)
     
     def on_drag_leave(self, event):
-        """Reset visual feedback when leaving canvas"""
+        """Reset visual feedback when leaving window"""
         self.preview_canvas.configure(highlightbackground="#666666", highlightthickness=2)
     
     def handle_drop(self, event):
-        """Handle dropped files on the preview canvas"""
+        """Handle dropped files on the app window"""
         # Reset visual feedback
         self.preview_canvas.configure(highlightbackground="#666666", highlightthickness=2)
         
@@ -1263,6 +1341,7 @@ In Blanks mode:
                 # Load as CSV
                 self.csv_path = path
                 self.attendees = self.read_attendees(path)
+                self.csv_btn.configure(text="Remove CSV", bootstyle="danger-outline")
                 self.csv_label.configure(text=f"{os.path.basename(path)[:15]} ({len(self.attendees)} attendees)", foreground="")
                 self.check_ready()
                 self.update_preview()
@@ -1281,10 +1360,23 @@ In Blanks mode:
                     messagebox.showerror("Error", f"Could not load image:\n{e}")
     
     def select_csv(self):
+        # Toggle behavior: if CSV loaded, remove it; otherwise select new one
+        if self.csv_path:
+            # Remove CSV
+            self.csv_path = None
+            self.attendees = []
+            self.csv_btn.configure(text="Select CSV", bootstyle="success-outline")
+            self.csv_label.configure(text="No file", foreground="gray")
+            self.check_ready()
+            self.update_preview()
+            return
+        
+        # Select new CSV
         path = filedialog.askopenfilename(title="Select CSV", filetypes=[("CSV", "*.csv"), ("All", "*.*")])
         if path:
             self.csv_path = path
             self.attendees = self.read_attendees(path)
+            self.csv_btn.configure(text="Remove CSV", bootstyle="danger-outline")
             self.csv_label.configure(text=f"{os.path.basename(path)[:15]} ({len(self.attendees)} attendees)", foreground="")
             self.check_ready()
             self.update_preview()
@@ -1376,6 +1468,10 @@ In Blanks mode:
         if self.swap_names_var.get():
             first, last = last, first
         
+        # Hide last name if checkbox is checked
+        if self.hide_last_name_var.get():
+            last = ""
+        
         return first, last
             
     def update_preview(self):
@@ -1426,13 +1522,17 @@ In Blanks mode:
         if not self.ticket_image:
             return
         
+        # In normal mode, don't show name preview if no CSV loaded
+        if not self.blanks_mode.get() and not self.attendees:
+            first, last = "", ""
+        elif self.blanks_mode.get():
+            # Blanks mode: use extra_text as single line (empty strings if not set)
+            extra = self.extra_text_var.get().strip()
+            first, last = extra, ""  # Extra text on first line, nothing on second
+        else:
+            first, last = self.parse_name(self.attendees[0])
+        
         try:
-            if self.blanks_mode.get():
-                # Blanks mode: use extra_text as single line (empty strings if not set)
-                extra = self.extra_text_var.get().strip()
-                first, last = extra, ""  # Extra text on first line, nothing on second
-            else:
-                first, last = self.parse_name(self.attendees[0]) if self.attendees else ("First", "Last")
             
             tw_in, th_in = float(self.ticket_width_var.get()), float(self.ticket_height_var.get())
             aspect = tw_in / th_in
@@ -1448,6 +1548,12 @@ In Blanks mode:
             self.preview_ticket_height = ph
             self.preview_ticket_width = pw
             self.preview_offset_y = (canvas_h - ph) // 2
+            self.preview_offset_x = (canvas_w - pw) // 2
+            
+            # Reset bounding boxes
+            self.title_bbox = None
+            self.name_bbox = None
+            self.counter_bbox = None
             
             # Stretch image to fill entire ticket, composite onto white background (matches PDF)
             processed_img = self.get_processed_image()
@@ -1466,9 +1572,21 @@ In Blanks mode:
             title_size = max(8, int(int(self.title_font_size_var.get()) * scale * 1.8))
             title_font = self.get_preview_font(title_size, self.title_bold_var.get())
             
-            # Name font
+            # Name font with auto-fit
             name_size = max(10, int(int(self.name_font_size_var.get()) * scale * 1.8))
             name_font = self.get_preview_font(name_size, self.name_bold_var.get())
+            
+            # Auto-fit: shrink font if names are too wide
+            if self.auto_fit_names_var.get() and (first or last):
+                max_width = int(pw * 0.85)  # 85% of ticket width
+                while name_size > 6:
+                    test_font = self.get_preview_font(name_size, self.name_bold_var.get())
+                    first_w = draw.textbbox((0, 0), first, font=test_font)[2] if first else 0
+                    last_w = draw.textbbox((0, 0), last, font=test_font)[2] if last else 0
+                    if max(first_w, last_w) <= max_width:
+                        break
+                    name_size -= 1
+                name_font = self.get_preview_font(name_size, self.name_bold_var.get())
             
             cx, cy = pw // 2, ph // 2
             
@@ -1478,23 +1596,32 @@ In Blanks mode:
             if title.strip():
                 title_y_center = cy + int(self.title_y_pos * ph)
                 # Get bbox at origin to calculate dimensions
-                bbox = draw.textbbox((0, 0), title.upper(), font=title_font)
+                bbox = draw.textbbox((0, 0), title, font=title_font)
                 tw_text = bbox[2] - bbox[0]
                 th_text = bbox[3] - bbox[1]
-                # Position text centered
-                tx = cx - tw_text // 2 - bbox[0]  # Adjust for left offset
+                # Position text - centered or offset based on lock
+                title_x_center = cx + (0 if self.center_lock_var.get() else int(self.title_x_pos * pw))
+                tx = title_x_center - tw_text // 2 - bbox[0]  # Adjust for left offset
                 ty = title_y_center - th_text // 2 - bbox[1]  # Adjust for top offset
-                self.draw_text_with_outline(draw, (tx, ty), title.upper(), title_font, 
+                self.draw_text_with_outline(draw, (tx, ty), title, title_font, 
                                            self.title_color, self.title_outline_var.get(),
                                            self.title_underline_var.get())
                 # Get actual bbox after positioning
-                actual_bbox = draw.textbbox((tx, ty), title.upper(), font=title_font)
+                actual_bbox = draw.textbbox((tx, ty), title, font=title_font)
                 draw.rectangle([actual_bbox[0] - 2, actual_bbox[1] - 2, 
                                actual_bbox[2] + 2, actual_bbox[3] + 2], outline="#2196F3", width=2)
                 title_bottom = actual_bbox[3]
+                # Store bbox in canvas coordinates
+                self.title_bbox = (
+                    actual_bbox[0] - 2 + self.preview_offset_x,
+                    actual_bbox[1] - 2 + self.preview_offset_y,
+                    actual_bbox[2] + 2 + self.preview_offset_x,
+                    actual_bbox[3] + 2 + self.preview_offset_y
+                )
             
             # Draw name - First name on top, Last name below (or single line in blanks mode)
             name_y_center = cy + int(self.name_y_pos * ph)
+            name_x_center = cx + (0 if self.center_lock_var.get() else int(self.name_x_pos * pw))
             
             if first and not last:
                 # Single line mode (blanks mode with extra text)
@@ -1502,7 +1629,7 @@ In Blanks mode:
                 first_w = first_bbox_0[2] - first_bbox_0[0]
                 first_h = first_bbox_0[3] - first_bbox_0[1]
                 
-                first_x = cx - first_w // 2 - first_bbox_0[0]
+                first_x = name_x_center - first_w // 2 - first_bbox_0[0]
                 first_y = name_y_center - first_h // 2 - first_bbox_0[1]
                 self.draw_text_with_outline(draw, (first_x, first_y), first, name_font, 
                                             self.name_color, self.name_outline_var.get(),
@@ -1512,6 +1639,13 @@ In Blanks mode:
                 # Draw box around single line
                 draw.rectangle([first_actual[0] - 2, first_actual[1] - 2, 
                                first_actual[2] + 2, first_actual[3] + 2], outline="#4CAF50", width=2)
+                # Store bbox in canvas coordinates
+                self.name_bbox = (
+                    first_actual[0] - 2 + self.preview_offset_x,
+                    first_actual[1] - 2 + self.preview_offset_y,
+                    first_actual[2] + 2 + self.preview_offset_x,
+                    first_actual[3] + 2 + self.preview_offset_y
+                )
             elif first or last:
                 # Two line mode (normal mode)
                 # Get dimensions for both names
@@ -1528,7 +1662,7 @@ In Blanks mode:
                 total_name_height = first_h + line_gap + last_h
                 
                 # Position first name
-                first_x = cx - first_w // 2 - first_bbox_0[0]
+                first_x = name_x_center - first_w // 2 - first_bbox_0[0]
                 first_y = name_y_center - total_name_height // 2 - first_bbox_0[1]
                 self.draw_text_with_outline(draw, (first_x, first_y), first, name_font, 
                                             self.name_color, self.name_outline_var.get(),
@@ -1536,7 +1670,7 @@ In Blanks mode:
                 first_actual = draw.textbbox((first_x, first_y), first, font=name_font)
                 
                 # Position last name
-                last_x = cx - last_w // 2 - last_bbox_0[0]
+                last_x = name_x_center - last_w // 2 - last_bbox_0[0]
                 last_y = first_actual[3] + line_gap - last_bbox_0[1]
                 self.draw_text_with_outline(draw, (last_x, last_y), last, name_font, 
                                             self.name_color, self.name_outline_var.get(),
@@ -1547,6 +1681,13 @@ In Blanks mode:
                 box_left = min(first_actual[0], last_actual[0]) - 2
                 box_right = max(first_actual[2], last_actual[2]) + 2
                 draw.rectangle([box_left, first_actual[1] - 2, box_right, last_actual[3] + 2], outline="#4CAF50", width=2)
+                # Store bbox in canvas coordinates
+                self.name_bbox = (
+                    box_left + self.preview_offset_x,
+                    first_actual[1] - 2 + self.preview_offset_y,
+                    box_right + self.preview_offset_x,
+                    last_actual[3] + 2 + self.preview_offset_y
+                )
             
             # Draw counter box if enabled
             if self.counter_enabled_var.get():
@@ -1589,20 +1730,58 @@ In Blanks mode:
                 # Position with X and Y offsets
                 counter_x_center = cx + int(self.counter_x_pos * pw)
                 counter_y_center = cy + int(self.counter_y_pos * ph)
-                bbox = draw.textbbox((0, 0), sample_text, font=counter_font)
-                cw = bbox[2] - bbox[0]
-                ch = bbox[3] - bbox[1]
                 
-                counter_x = counter_x_center - cw // 2 - bbox[0]
-                counter_y = counter_y_center - ch // 2 - bbox[1]
-                
-                # Draw number
-                draw.text((counter_x, counter_y), sample_text, fill=counter_color, font=counter_font)
-                
-                # Draw box around counter
-                actual_bbox = draw.textbbox((counter_x, counter_y), sample_text, font=counter_font)
-                draw.rectangle([actual_bbox[0] - 4, actual_bbox[1] - 2, 
-                               actual_bbox[2] + 4, actual_bbox[3] + 2], outline=counter_color, width=2)
+                if self.counter_rotation == 0:
+                    # No rotation - draw directly
+                    bbox = draw.textbbox((0, 0), sample_text, font=counter_font)
+                    cw = bbox[2] - bbox[0]
+                    ch = bbox[3] - bbox[1]
+                    
+                    counter_x = counter_x_center - cw // 2 - bbox[0]
+                    counter_y = counter_y_center - ch // 2 - bbox[1]
+                    
+                    # Draw number
+                    draw.text((counter_x, counter_y), sample_text, fill=counter_color, font=counter_font)
+                    
+                    # Draw box around counter (fixed orange color for drag handle)
+                    actual_bbox = draw.textbbox((counter_x, counter_y), sample_text, font=counter_font)
+                    draw.rectangle([actual_bbox[0] - 4, actual_bbox[1] - 2, 
+                                   actual_bbox[2] + 4, actual_bbox[3] + 2], outline="#FF9800", width=2)
+                    # Store bbox in canvas coordinates
+                    self.counter_bbox = (
+                        actual_bbox[0] - 4 + self.preview_offset_x,
+                        actual_bbox[1] - 2 + self.preview_offset_y,
+                        actual_bbox[2] + 4 + self.preview_offset_x,
+                        actual_bbox[3] + 2 + self.preview_offset_y
+                    )
+                else:
+                    # Create rotated text
+                    bbox = draw.textbbox((0, 0), sample_text, font=counter_font)
+                    text_w = bbox[2] - bbox[0] + 8
+                    text_h = bbox[3] - bbox[1] + 4
+                    
+                    # Create transparent image for text
+                    txt_img = Image.new('RGBA', (text_w, text_h), (255, 255, 255, 0))
+                    txt_draw = ImageDraw.Draw(txt_img)
+                    txt_draw.text((4 - bbox[0], 2 - bbox[1]), sample_text, fill=counter_color, font=counter_font)
+                    
+                    # Draw box on text image (fixed orange color for drag handle)
+                    txt_draw.rectangle([0, 0, text_w - 1, text_h - 1], outline="#FF9800", width=2)
+                    
+                    # Rotate the text image
+                    rotated = txt_img.rotate(self.counter_rotation, expand=True, resample=Image.BICUBIC)
+                    
+                    # Paste onto ticket
+                    paste_x = counter_x_center - rotated.width // 2
+                    paste_y = counter_y_center - rotated.height // 2
+                    ticket.paste(rotated, (paste_x, paste_y), rotated)
+                    # Store bbox in canvas coordinates
+                    self.counter_bbox = (
+                        paste_x + self.preview_offset_x,
+                        paste_y + self.preview_offset_y,
+                        paste_x + rotated.width + self.preview_offset_x,
+                        paste_y + rotated.height + self.preview_offset_y
+                    )
             
             self.preview_photo = ImageTk.PhotoImage(ticket)
             self.preview_canvas.delete("all")
@@ -1611,14 +1790,18 @@ In Blanks mode:
             # Legend
             self.preview_canvas.create_rectangle(10, canvas_h-20, 20, canvas_h-10, fill="#2196F3", outline="#2196F3")
             self.preview_canvas.create_text(24, canvas_h-15, anchor=tk.W, text="Title", fill="#333", font=("Arial", 8))
-            self.preview_canvas.create_rectangle(60, canvas_h-20, 70, canvas_h-10, fill="#4CAF50", outline="#4CAF50")
-            legend_text = "Extra" if self.blanks_mode.get() else "Name"
-            self.preview_canvas.create_text(74, canvas_h-15, anchor=tk.W, text=legend_text, fill="#333", font=("Arial", 8))
+            
+            # Only show Name/Extra legend if we have data to show
+            if self.blanks_mode.get() or self.attendees:
+                self.preview_canvas.create_rectangle(60, canvas_h-20, 70, canvas_h-10, fill="#4CAF50", outline="#4CAF50")
+                legend_text = "Extra" if self.blanks_mode.get() else "Name"
+                self.preview_canvas.create_text(74, canvas_h-15, anchor=tk.W, text=legend_text, fill="#333", font=("Arial", 8))
             
             if self.counter_enabled_var.get():
-                legend_counter_color = "#C41E3A" if self.counter_color_var.get() == "Red" else "#000000"
-                self.preview_canvas.create_rectangle(110, canvas_h-20, 120, canvas_h-10, fill=legend_counter_color, outline=legend_counter_color)
-                self.preview_canvas.create_text(124, canvas_h-15, anchor=tk.W, text="Counter", fill="#333", font=("Arial", 8))
+                # Position counter legend based on whether Name/Extra is shown
+                counter_x = 110 if (self.blanks_mode.get() or self.attendees) else 60
+                self.preview_canvas.create_rectangle(counter_x, canvas_h-20, counter_x+10, canvas_h-10, fill="#FF9800", outline="#FF9800")
+                self.preview_canvas.create_text(counter_x+14, canvas_h-15, anchor=tk.W, text="Counter", fill="#333", font=("Arial", 8))
             
         except Exception as e:
             print(f"Preview error: {e}")
@@ -1815,6 +1998,10 @@ In Blanks mode:
             cx, cy = x + ticket_w/2, y + ticket_h/2
             size_factor = min(ticket_w / (3*inch), ticket_h / (1.75*inch))
             
+            # Calculate X positions based on center lock
+            title_x = cx + (0 if self.center_lock_var.get() else self.title_x_pos * ticket_w)
+            name_x = cx + (0 if self.center_lock_var.get() else self.name_x_pos * ticket_w)
+            
             # Title
             title = self.title_var.get().strip()
             if title:
@@ -1830,53 +2017,81 @@ In Blanks mode:
                     for dx in [-1, 0, 1]:
                         for dy in [-1, 0, 1]:
                             if dx or dy:
-                                c.drawCentredString(cx + dx, title_y + dy, title.upper())
+                                c.drawCentredString(title_x + dx, title_y + dy, title)
                 
                 c.setFillColorRGB(title_rgb[0]/255, title_rgb[1]/255, title_rgb[2]/255)
-                c.drawCentredString(cx, title_y, title.upper())
+                c.drawCentredString(title_x, title_y, title)
                 
                 # Title underline
                 if self.title_underline_var.get():
-                    title_width = c.stringWidth(title.upper(), font_name, title_size)
+                    title_width = c.stringWidth(title, font_name, title_size)
                     c.setStrokeColorRGB(title_rgb[0]/255, title_rgb[1]/255, title_rgb[2]/255)
                     c.setLineWidth(1)
-                    c.line(cx - title_width/2, title_y - 2, cx + title_width/2, title_y - 2)
+                    c.line(title_x - title_width/2, title_y - 2, title_x + title_width/2, title_y - 2)
             
             # Name - First above Last
             name_size = max(6, int(int(self.name_font_size_var.get()) * size_factor * 1.8))
             font_name = "Helvetica-Bold" if self.name_bold_var.get() else "Helvetica"
+            
+            # Auto-fit: shrink font if names are too wide
+            if self.auto_fit_names_var.get() and (first or last):
+                max_width = ticket_w * 0.85  # 85% of ticket width
+                while name_size > 4:
+                    first_w = c.stringWidth(first, font_name, name_size) if first else 0
+                    last_w = c.stringWidth(last, font_name, name_size) if last else 0
+                    if max(first_w, last_w) <= max_width:
+                        break
+                    name_size -= 0.5
+            
             c.setFont(font_name, name_size)
             
             # PDF Y is bottom-up, name_y_pos positive = below center in preview = lower Y in PDF
             name_y_center = cy - (self.name_y_pos * ticket_h)
             
-            # Small gap between lines
-            line_gap = name_size * 0.15
-            
-            # Position: first name above, last name below - tighter spacing
-            first_y = name_y_center + line_gap / 2 + name_size * 0.15
-            last_y = name_y_center - line_gap / 2 - name_size * 0.65
-            
-            if self.name_outline_var.get():
-                c.setFillColorRGB(1, 1, 1)
-                for dx in [-1, 0, 1]:
-                    for dy in [-1, 0, 1]:
-                        if dx or dy:
-                            c.drawCentredString(cx + dx, first_y + dy, first)
-                            c.drawCentredString(cx + dx, last_y + dy, last)
-            
-            c.setFillColorRGB(name_rgb[0]/255, name_rgb[1]/255, name_rgb[2]/255)
-            c.drawCentredString(cx, first_y, first)
-            c.drawCentredString(cx, last_y, last)
-            
-            # Name underlines
-            if self.name_underline_var.get():
-                c.setStrokeColorRGB(name_rgb[0]/255, name_rgb[1]/255, name_rgb[2]/255)
-                c.setLineWidth(1)
-                first_width = c.stringWidth(first, font_name, name_size)
-                last_width = c.stringWidth(last, font_name, name_size)
-                c.line(cx - first_width/2, first_y - 2, cx + first_width/2, first_y - 2)
-                c.line(cx - last_width/2, last_y - 2, cx + last_width/2, last_y - 2)
+            if first and not last:
+                # Single line mode - center the name vertically
+                first_y = name_y_center - name_size * 0.35
+                
+                if self.name_outline_var.get():
+                    c.setFillColorRGB(1, 1, 1)
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            if dx or dy:
+                                c.drawCentredString(name_x + dx, first_y + dy, first)
+                
+                c.setFillColorRGB(name_rgb[0]/255, name_rgb[1]/255, name_rgb[2]/255)
+                c.drawCentredString(name_x, first_y, first)
+                
+                if self.name_underline_var.get():
+                    c.setStrokeColorRGB(name_rgb[0]/255, name_rgb[1]/255, name_rgb[2]/255)
+                    c.setLineWidth(1)
+                    first_width = c.stringWidth(first, font_name, name_size)
+                    c.line(name_x - first_width/2, first_y - 2, name_x + first_width/2, first_y - 2)
+            else:
+                # Two line mode - first name above, last name below
+                line_gap = name_size * 0.15
+                first_y = name_y_center + line_gap / 2 + name_size * 0.15
+                last_y = name_y_center - line_gap / 2 - name_size * 0.65
+                
+                if self.name_outline_var.get():
+                    c.setFillColorRGB(1, 1, 1)
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            if dx or dy:
+                                c.drawCentredString(name_x + dx, first_y + dy, first)
+                                c.drawCentredString(name_x + dx, last_y + dy, last)
+                
+                c.setFillColorRGB(name_rgb[0]/255, name_rgb[1]/255, name_rgb[2]/255)
+                c.drawCentredString(name_x, first_y, first)
+                c.drawCentredString(name_x, last_y, last)
+                
+                if self.name_underline_var.get():
+                    c.setStrokeColorRGB(name_rgb[0]/255, name_rgb[1]/255, name_rgb[2]/255)
+                    c.setLineWidth(1)
+                    first_width = c.stringWidth(first, font_name, name_size)
+                    last_width = c.stringWidth(last, font_name, name_size)
+                    c.line(name_x - first_width/2, first_y - 2, name_x + first_width/2, first_y - 2)
+                    c.line(name_x - last_width/2, last_y - 2, name_x + last_width/2, last_y - 2)
             
             # Counter number
             if counter_num is not None and self.counter_enabled_var.get():
@@ -1892,7 +2107,16 @@ In Blanks mode:
                 # Calculate counter position with X and Y offsets
                 counter_x = cx + (self.counter_x_pos * ticket_w)
                 counter_y = cy - (self.counter_y_pos * ticket_h) - counter_size * 0.35
-                c.drawCentredString(counter_x, counter_y, str(counter_num))
+                
+                if self.counter_rotation == 0:
+                    c.drawCentredString(counter_x, counter_y, str(counter_num))
+                else:
+                    # Save state, rotate, draw, restore
+                    c.saveState()
+                    c.translate(counter_x, counter_y + counter_size * 0.35)
+                    c.rotate(self.counter_rotation)
+                    c.drawCentredString(0, -counter_size * 0.35, str(counter_num))
+                    c.restoreState()
         
         def draw_cutting_guides():
             """Draw dotted cutting lines between tickets"""
@@ -2054,6 +2278,10 @@ In Blanks mode:
             cx, cy = x + ticket_w/2, y + ticket_h/2
             size_factor = min(ticket_w / (3*inch), ticket_h / (1.75*inch))
             
+            # Calculate X positions based on center lock
+            title_x = cx + (0 if self.center_lock_var.get() else self.title_x_pos * ticket_w)
+            extra_x = cx + (0 if self.center_lock_var.get() else self.name_x_pos * ticket_w)
+            
             # Title
             title = self.title_var.get().strip()
             if title:
@@ -2068,21 +2296,31 @@ In Blanks mode:
                     for dx in [-1, 0, 1]:
                         for dy in [-1, 0, 1]:
                             if dx or dy:
-                                c.drawCentredString(cx + dx, title_y + dy, title.upper())
+                                c.drawCentredString(title_x + dx, title_y + dy, title)
                 
                 c.setFillColorRGB(title_rgb[0]/255, title_rgb[1]/255, title_rgb[2]/255)
-                c.drawCentredString(cx, title_y, title.upper())
+                c.drawCentredString(title_x, title_y, title)
                 
                 if self.title_underline_var.get():
-                    title_width = c.stringWidth(title.upper(), font_name, title_size)
+                    title_width = c.stringWidth(title, font_name, title_size)
                     c.setStrokeColorRGB(title_rgb[0]/255, title_rgb[1]/255, title_rgb[2]/255)
                     c.setLineWidth(1)
-                    c.line(cx - title_width/2, title_y - 2, cx + title_width/2, title_y - 2)
+                    c.line(title_x - title_width/2, title_y - 2, title_x + title_width/2, title_y - 2)
             
             # Extra text (single line, uses "name/extra" settings)
             if extra_text:
                 extra_size = max(6, int(int(self.name_font_size_var.get()) * size_factor * 1.8))
                 font_name = "Helvetica-Bold" if self.name_bold_var.get() else "Helvetica"
+                
+                # Auto-fit: shrink font if extra text is too wide
+                if self.auto_fit_names_var.get():
+                    max_width = ticket_w * 0.85  # 85% of ticket width
+                    while extra_size > 4:
+                        text_w = c.stringWidth(extra_text, font_name, extra_size)
+                        if text_w <= max_width:
+                            break
+                        extra_size -= 0.5
+                
                 c.setFont(font_name, extra_size)
                 
                 extra_y = cy - (self.name_y_pos * ticket_h) - extra_size * 0.35
@@ -2092,16 +2330,16 @@ In Blanks mode:
                     for dx in [-1, 0, 1]:
                         for dy in [-1, 0, 1]:
                             if dx or dy:
-                                c.drawCentredString(cx + dx, extra_y + dy, extra_text)
+                                c.drawCentredString(extra_x + dx, extra_y + dy, extra_text)
                 
                 c.setFillColorRGB(extra_rgb[0]/255, extra_rgb[1]/255, extra_rgb[2]/255)
-                c.drawCentredString(cx, extra_y, extra_text)
+                c.drawCentredString(extra_x, extra_y, extra_text)
                 
                 if self.name_underline_var.get():
                     extra_width = c.stringWidth(extra_text, font_name, extra_size)
                     c.setStrokeColorRGB(extra_rgb[0]/255, extra_rgb[1]/255, extra_rgb[2]/255)
                     c.setLineWidth(1)
-                    c.line(cx - extra_width/2, extra_y - 2, cx + extra_width/2, extra_y - 2)
+                    c.line(extra_x - extra_width/2, extra_y - 2, extra_x + extra_width/2, extra_y - 2)
             
             # Counter number
             if counter_num is not None and self.counter_enabled_var.get():
@@ -2117,7 +2355,16 @@ In Blanks mode:
                 # Calculate counter position with X and Y offsets
                 counter_x = cx + (self.counter_x_pos * ticket_w)
                 counter_y = cy - (self.counter_y_pos * ticket_h) - counter_size * 0.35
-                c.drawCentredString(counter_x, counter_y, str(counter_num))
+                
+                if self.counter_rotation == 0:
+                    c.drawCentredString(counter_x, counter_y, str(counter_num))
+                else:
+                    # Save state, rotate, draw, restore
+                    c.saveState()
+                    c.translate(counter_x, counter_y + counter_size * 0.35)
+                    c.rotate(self.counter_rotation)
+                    c.drawCentredString(0, -counter_size * 0.35, str(counter_num))
+                    c.restoreState()
         
         def draw_cutting_guides():
             """Draw dotted cutting lines between tickets"""
@@ -2196,7 +2443,7 @@ def main():
     # Set Windows taskbar icon (must be before creating window)
     try:
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('MadeForYouApps.TicketGenerator.1.0')
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('MadeForYouApps.TicketMaker.1.0')
     except:
         pass  # Not on Windows or failed
     
