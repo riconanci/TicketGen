@@ -7,6 +7,7 @@ Repository: https://github.com/riconanci/TicketGen
 
 import csv
 import os
+import sys
 import math
 import tkinter as tk
 from tkinter import filedialog, messagebox, colorchooser
@@ -18,6 +19,22 @@ from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 import traceback
+
+# Try to import drag and drop support
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    HAS_DND = True
+except ImportError:
+    HAS_DND = False
+
+
+def resource_path(relative_path):
+    """Get absolute path to resource, works for dev and PyInstaller"""
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 
 
 class TicketGeneratorApp:
@@ -201,11 +218,20 @@ class TicketGeneratorApp:
         self.preview_canvas = tk.Canvas(preview_frame, width=500, height=240, bg="white", relief="solid", bd=1, 
                                          highlightthickness=2, highlightbackground="#666666")
         self.preview_canvas.pack(pady=2)
-        self.preview_canvas.create_text(250, 120, text="Select an image to see preview", fill="gray")
+        
+        # Set default text based on drag-drop support
+        if HAS_DND:
+            self.preview_canvas.create_text(250, 120, text="Select or drag & drop an image to see preview", fill="gray", tags="placeholder")
+        else:
+            self.preview_canvas.create_text(250, 120, text="Select an image to see preview", fill="gray", tags="placeholder")
         
         self.preview_canvas.bind("<Button-1>", self.on_canvas_click)
         self.preview_canvas.bind("<B1-Motion>", self.on_canvas_drag)
         self.preview_canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
+        
+        # Setup drag and drop if available
+        if HAS_DND:
+            self.setup_drag_drop()
         
         self.layout_info_label = ttk.Label(preview_frame, text="", foreground="blue")
         self.layout_info_label.pack()
@@ -1184,6 +1210,76 @@ In Blanks mode:
                 self.attendee_info_label.configure(text=f"({att_per_page} attendee(s) per page)")
                 self.calc_info_label.configure(text="")
         
+    def setup_drag_drop(self):
+        """Setup drag and drop functionality for the preview canvas"""
+        try:
+            self.preview_canvas.drop_target_register(DND_FILES)
+            self.preview_canvas.dnd_bind('<<Drop>>', self.handle_drop)
+            
+            # Visual feedback on drag enter/leave
+            self.preview_canvas.dnd_bind('<<DragEnter>>', self.on_drag_enter)
+            self.preview_canvas.dnd_bind('<<DragLeave>>', self.on_drag_leave)
+        except Exception as e:
+            print(f"Drag-drop setup failed: {e}")
+    
+    def on_drag_enter(self, event):
+        """Visual feedback when dragging over canvas"""
+        self.preview_canvas.configure(highlightbackground="#2196F3", highlightthickness=3)
+    
+    def on_drag_leave(self, event):
+        """Reset visual feedback when leaving canvas"""
+        self.preview_canvas.configure(highlightbackground="#666666", highlightthickness=2)
+    
+    def handle_drop(self, event):
+        """Handle dropped files on the preview canvas"""
+        # Reset visual feedback
+        self.preview_canvas.configure(highlightbackground="#666666", highlightthickness=2)
+        
+        # Get the dropped file path(s)
+        # tkinterdnd2 returns paths in different formats depending on OS
+        files = event.data
+        
+        # Handle curly braces around paths with spaces (Windows)
+        if files.startswith('{'):
+            # Multiple files or path with spaces
+            import re
+            paths = re.findall(r'\{([^}]+)\}|(\S+)', files)
+            paths = [p[0] or p[1] for p in paths if p[0] or p[1]]
+        else:
+            paths = files.split()
+        
+        if not paths:
+            return
+        
+        # Process each dropped file
+        for path in paths:
+            path = path.strip()
+            if not path:
+                continue
+                
+            ext = os.path.splitext(path)[1].lower()
+            
+            if ext == '.csv':
+                # Load as CSV
+                self.csv_path = path
+                self.attendees = self.read_attendees(path)
+                self.csv_label.configure(text=f"{os.path.basename(path)[:15]} ({len(self.attendees)} attendees)", foreground="")
+                self.check_ready()
+                self.update_preview()
+                
+            elif ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
+                # Load as image
+                try:
+                    self.image_path = path
+                    self.img_label.configure(text=os.path.basename(path)[:20], foreground="")
+                    self.ticket_image = Image.open(path)
+                    self.image_aspect_ratio = self.ticket_image.width / self.ticket_image.height
+                    self.auto_fit_to_image()
+                    self.check_ready()
+                    self.update_preview()
+                except Exception as e:
+                    messagebox.showerror("Error", f"Could not load image:\n{e}")
+    
     def select_csv(self):
         path = filedialog.askopenfilename(title="Select CSV", filetypes=[("CSV", "*.csv"), ("All", "*.*")])
         if path:
@@ -2097,7 +2193,28 @@ In Blanks mode:
 
 
 def main():
-    root = ttk.Window(themename="flatly")
+    # Set Windows taskbar icon (must be before creating window)
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('MadeForYouApps.TicketGenerator.1.0')
+    except:
+        pass  # Not on Windows or failed
+    
+    # Create root window with drag-drop support if available
+    if HAS_DND:
+        root = TkinterDnD.Tk()
+        # Apply ttkbootstrap theme to TkinterDnD root
+        style = ttk.Style(theme='flatly')
+    else:
+        root = ttk.Window(themename="flatly")
+    
+    # Set window icon
+    try:
+        icon_path = resource_path('app_icon.ico')
+        root.iconbitmap(icon_path)
+    except Exception as e:
+        print(f"Icon not loaded: {e}")  # Debug info
+    
     app = TicketGeneratorApp(root)
     root.mainloop()
 
